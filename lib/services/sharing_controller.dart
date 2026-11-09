@@ -2,7 +2,7 @@ import 'dart:async';
 import 'dart:io';
 import 'dart:math';
 
-import 'package:flutter/foundation.dart';
+import 'package:flutter/widgets.dart';
 
 import '../models/device_identity.dart';
 import '../models/peer_device.dart';
@@ -39,6 +39,8 @@ class SharingController extends ChangeNotifier {
   FileSource? _source;
   StreamSubscription<void>? _peerSub;
   Timer? _networkTimer;
+  AppLifecycleListener? _lifecycle;
+  int _missedNetworkChecks = 0;
   bool _busy = false;
 
   // ------------------------------------------------------------------- state
@@ -96,6 +98,39 @@ class SharingController extends ChangeNotifier {
   /// Other DataCast devices found on this network.
   List<PeerDevice> get peers => _discovery.peers;
 
+  /// True when this device has a usable Wi-Fi or hotspot address. Updated on
+  /// app resume and every 5 seconds.
+  bool _hasNetwork = false;
+  bool get hasNetwork => _hasNetwork;
+
+  /// Why sharing last ended on its own; null after the user tapped Stop.
+  StopReason? _stopReason;
+  StopReason? get stopReason => _stopReason;
+
+  void clearStopReason() {
+    if (_stopReason == null) return;
+    _stopReason = null;
+    notifyListeners();
+  }
+
+  /// True after the sharing address changed (e.g. the phone joined another
+  /// network) until the UI calls [acknowledgeUrlChange].
+  bool _urlChanged = false;
+  bool get urlChanged => _urlChanged;
+
+  void acknowledgeUrlChange() {
+    if (!_urlChanged) return;
+    _urlChanged = false;
+    notifyListeners();
+  }
+
+  /// Opens the system Wi-Fi settings.
+  Future<void> openWifiSettings() async {
+    try {
+      await bridge.openWifiSettings();
+    } catch (_) {}
+  }
+
   /// Last user-facing error, cleared on the next successful action.
   String? _error;
   String? get error => _error;
@@ -118,8 +153,16 @@ class SharingController extends ChangeNotifier {
     _auth = PinAuth(pin: pin != null && RegExp(r'^\d{4}$').hasMatch(pin) ? pin : null);
     settings.pin = _auth.pin;
     _auth.onClientsChanged = notifyListeners;
-    bridge.onStopRequested = () => unawaited(stop());
+    bridge.onStopRequested = () => unawaited(_stopWith(StopReason.system));
     _peerSub = _discovery.changes.listen((_) => notifyListeners());
+    // The process died while sharing last time (OS killed it, crash, ...).
+    if (settings.wasSharing) {
+      settings.wasSharing = false;
+      _stopReason = StopReason.system;
+    }
+    _hasNetwork = await findLocalIpv4() != null;
+    _networkTimer = Timer.periodic(const Duration(seconds: 5), (_) => unawaited(refreshNetwork()));
+    _lifecycle = AppLifecycleListener(onResume: () => unawaited(refreshNetwork()));
     _initialized = true;
     notifyListeners();
   }
@@ -206,7 +249,10 @@ class SharingController extends ChangeNotifier {
         debugPrint('DataCast: discovery failed to start: $e');
       }
       _applyKeepScreenOn();
-      _networkTimer = Timer.periodic(const Duration(seconds: 10), (_) => _checkNetwork());
+      _stopReason = null;
+      _urlChanged = false;
+      _missedNetworkChecks = 0;
+      settings.wasSharing = true;
     } catch (e) {
       await _teardown();
       _fail('Could not start sharing: $e');
@@ -215,11 +261,16 @@ class SharingController extends ChangeNotifier {
     }
   }
 
-  Future<void> stop() async {
+  /// Stops sharing because the user asked to.
+  Future<void> stop() => _stopWith(null);
+
+  Future<void> _stopWith(StopReason? reason) async {
     if (!isSharing || _busy) return;
     _setBusy(true);
     try {
       await _teardown();
+      _stopReason = reason;
+      _urlChanged = false;
     } finally {
       _setBusy(false);
     }
@@ -312,8 +363,7 @@ class SharingController extends ChangeNotifier {
   }
 
   Future<void> _teardown() async {
-    _networkTimer?.cancel();
-    _networkTimer = null;
+    settings.wasSharing = false;
     await _discovery.stop();
     await _server?.stop();
     _server = null;
@@ -329,24 +379,66 @@ class SharingController extends ChangeNotifier {
     }
   }
 
-  Future<void> _checkNetwork() async {
-    final server = _server;
-    if (server == null) return;
+  /// Re-checks Wi-Fi (and, while sharing, access to the shared items).
+  Future<void> refreshNetwork() async {
+    if (_busy) return;
     final ip = await findLocalIpv4();
+    final had = _hasNetwork;
+    _hasNetwork = ip != null;
+    final server = _server;
+    if (server == null) {
+      if (had != _hasNetwork) notifyListeners();
+      return;
+    }
     if (ip == null) {
-      _fail('Wi-Fi disconnected. Sharing stopped.');
-      await stop();
+      // Allow one missed check so a brief blip doesn't stop sharing.
+      if (++_missedNetworkChecks >= 2) {
+        await _stopWith(StopReason.wifiLost);
+      } else if (had) {
+        notifyListeners();
+      }
+      return;
+    }
+    _missedNetworkChecks = 0;
+    if (!await _stillHasAccess()) {
+      await _stopWith(StopReason.accessLost);
       return;
     }
     final newUrl = 'http://$ip:${server.port}';
     if (newUrl != _url) {
       _url = newUrl;
+      _urlChanged = true;
       server.localIp = ip;
       _refreshNotification();
       try {
         await _discovery.start(_identity, server.port!);
       } catch (_) {}
       notifyListeners();
+    } else if (had != _hasNetwork) {
+      notifyListeners();
+    }
+  }
+
+  Future<bool> _stillHasAccess() async {
+    if (!Platform.isAndroid) return true;
+    try {
+      if (shareMode == ShareMode.folder) {
+        final uri = settings.folderUri;
+        return uri == null || !uri.startsWith('content://') || await bridge.hasFolderAccess(uri);
+      }
+      final files = settings.sharedFiles;
+      final ok = <SharedFile>[];
+      for (final f in files) {
+        if (!f.uri.startsWith('content://') || await bridge.hasDocAccess(f.uri)) ok.add(f);
+      }
+      if (ok.length != files.length) {
+        settings.sharedFiles = ok;
+        _refreshSource();
+        notifyListeners();
+      }
+      return ok.isNotEmpty;
+    } catch (_) {
+      return true; // don't stop sharing because a check itself failed
     }
   }
 
@@ -373,6 +465,8 @@ class SharingController extends ChangeNotifier {
 
   @override
   void dispose() {
+    _networkTimer?.cancel();
+    _lifecycle?.dispose();
     unawaited(_teardown());
     _peerSub?.cancel();
     super.dispose();

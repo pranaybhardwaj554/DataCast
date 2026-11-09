@@ -43,6 +43,10 @@ class SettingsStore {
 
   set sharedFiles(List<SharedFile> v) => _prefs.setString('sharedFiles', jsonEncode([for (final f in v) f.toJson()]));
 
+  /// True while sharing; still true on launch if the app was killed mid-share.
+  bool get wasSharing => _prefs.getBool('wasSharing') ?? false;
+  set wasSharing(bool v) => _prefs.setBool('wasSharing', v);
+
   int get port => _prefs.getInt('port') ?? 8080;
   set port(int v) => _prefs.setInt('port', v);
 

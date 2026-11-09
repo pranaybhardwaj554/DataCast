@@ -1,6 +1,19 @@
 /// What the device is sharing: a whole folder, or files picked one by one.
 enum ShareMode { folder, files }
 
+/// Why sharing ended without the user tapping Stop in the app.
+enum StopReason {
+  /// Wi-Fi / hotspot went away.
+  wifiLost,
+
+  /// The app can no longer read the shared folder or files.
+  accessLost,
+
+  /// The system ended it: notification Stop, the 6-hour Android limit, or
+  /// the app being killed while sharing.
+  system,
+}
+
 /// One file the user picked to share in [ShareMode.files].
 class SharedFile {
   const SharedFile({required this.uri, required this.name, this.size = 0, this.mime});

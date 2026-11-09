@@ -69,6 +69,13 @@ class NativeBridge(private val context: Context, messenger: BinaryMessenger) :
                 SharingService.stop(context)
                 result.success(null)
             }
+            "openWifiSettings" -> {
+                val intent = Intent(Settings.ACTION_WIFI_SETTINGS)
+                val a = activity
+                if (a != null) a.startActivity(intent)
+                else context.startActivity(intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+                result.success(null)
+            }
             "setKeepScreenOn" -> {
                 keepScreenOn = call.argument<Boolean>("on") == true
                 applyKeepScreenOn()

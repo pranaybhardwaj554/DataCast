@@ -66,6 +66,8 @@ class PlatformBridge {
   /// Keeps the screen from turning off while the app is visible.
   Future<void> setKeepScreenOn(bool on) => _channel.invokeMethod('setKeepScreenOn', {'on': on});
 
+  Future<void> openWifiSettings() => _channel.invokeMethod('openWifiSettings');
+
   Future<void> stopForegroundService() => _channel.invokeMethod('stopService');
 
   // ------------------------------------------------------------- storage (SAF)
