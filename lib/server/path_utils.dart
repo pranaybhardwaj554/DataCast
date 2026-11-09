@@ -25,9 +25,7 @@ String normalizeSharePath(String? raw) {
 }
 
 /// Joins a normalized parent path and a child name.
-String joinSharePath(String parent, String name) =>
-    parent == '/' ? '/$name' : '$parent/$name';
+String joinSharePath(String parent, String name) => parent == '/' ? '/$name' : '$parent/$name';
 
 /// Last segment of a normalized path (`''` for the root).
-String baseName(String path) =>
-    path == '/' ? '' : path.substring(path.lastIndexOf('/') + 1);
+String baseName(String path) => path == '/' ? '' : path.substring(path.lastIndexOf('/') + 1);

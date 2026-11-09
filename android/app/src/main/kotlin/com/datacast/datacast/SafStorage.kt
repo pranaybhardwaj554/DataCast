@@ -6,6 +6,7 @@ import android.net.Uri
 import android.os.ParcelFileDescriptor
 import android.provider.DocumentsContract
 import android.provider.DocumentsContract.Document
+import android.provider.OpenableColumns
 import java.util.concurrent.ConcurrentHashMap
 
 /**
@@ -24,6 +25,48 @@ class SafStorage(private val context: Context) {
 
     fun hasAccess(tree: Uri): Boolean =
         resolver.persistedUriPermissions.any { it.uri == tree && it.isReadPermission }
+
+    // ------------------------------------------------ individually picked files
+
+    fun takeDocPermission(doc: Uri) {
+        resolver.takePersistableUriPermission(doc, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+    }
+
+    fun hasDocAccess(doc: Uri): Boolean {
+        if (resolver.persistedUriPermissions.any { it.uri == doc && it.isReadPermission }) return true
+        return try {
+            resolver.query(doc, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { true } ?: false
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    /** {name, size, mime, modified} for one document, or null if it's gone. */
+    fun docStat(doc: Uri): Map<String, Any?>? = try {
+        resolver.query(doc, null, null, null, null)?.use { c ->
+            if (!c.moveToFirst()) return@use null
+            fun col(name: String) = c.getColumnIndex(name)
+            val nameCol = col(OpenableColumns.DISPLAY_NAME)
+            val sizeCol = col(OpenableColumns.SIZE)
+            val modCol = col(Document.COLUMN_LAST_MODIFIED)
+            mapOf(
+                "name" to ((if (nameCol >= 0) c.getString(nameCol) else null)
+                    ?: doc.lastPathSegment ?: "file"),
+                "size" to if (sizeCol >= 0 && !c.isNull(sizeCol)) c.getLong(sizeCol) else 0L,
+                "mime" to resolver.getType(doc),
+                "modified" to if (modCol >= 0 && !c.isNull(modCol)) c.getLong(modCol) else 0L,
+            )
+        }
+    } catch (_: Exception) {
+        null
+    }
+
+    fun docOpenFd(doc: Uri): Int? = resolver.openFileDescriptor(doc, "r")?.detachFd()
+
+    fun docReadChunk(doc: Uri, offset: Long, length: Int): ByteArray =
+        resolver.openInputStream(doc)?.use { readRange(it, offset, length) } ?: ByteArray(0)
+
+    // --------------------------------------------------------- picked folders
 
     fun displayName(tree: Uri): String? {
         val doc = DocumentsContract.buildDocumentUriUsingTree(tree, DocumentsContract.getTreeDocumentId(tree))
@@ -81,23 +124,24 @@ class SafStorage(private val context: Context) {
     fun readChunk(tree: Uri, path: String, offset: Long, length: Int): ByteArray {
         val id = resolve(tree, path) ?: return ByteArray(0)
         val doc = DocumentsContract.buildDocumentUriUsingTree(tree, id)
-        resolver.openInputStream(doc)?.use { input ->
-            var skipped = 0L
-            while (skipped < offset) {
-                val n = input.skip(offset - skipped)
-                if (n <= 0) return ByteArray(0)
-                skipped += n
-            }
-            val buf = ByteArray(length)
-            var read = 0
-            while (read < length) {
-                val n = input.read(buf, read, length - read)
-                if (n < 0) break
-                read += n
-            }
-            return if (read == length) buf else buf.copyOf(read)
+        return resolver.openInputStream(doc)?.use { readRange(it, offset, length) } ?: ByteArray(0)
+    }
+
+    private fun readRange(input: java.io.InputStream, offset: Long, length: Int): ByteArray {
+        var skipped = 0L
+        while (skipped < offset) {
+            val n = input.skip(offset - skipped)
+            if (n <= 0) return ByteArray(0)
+            skipped += n
         }
-        return ByteArray(0)
+        val buf = ByteArray(length)
+        var read = 0
+        while (read < length) {
+            val n = input.read(buf, read, length - read)
+            if (n < 0) break
+            read += n
+        }
+        return if (read == length) buf else buf.copyOf(read)
     }
 
     private fun resolve(tree: Uri, path: String): String? {

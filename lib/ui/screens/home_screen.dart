@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 
+import '../../models/shared_file.dart';
 import '../../services/sharing_controller.dart';
 import '../theme/app_theme.dart';
 import '../widgets/common.dart';
@@ -44,6 +45,9 @@ class _IdleView extends StatefulWidget {
 
 class _IdleViewState extends State<_IdleView> {
   bool _busy = false;
+  // Which tab is shown. Starts on whatever is currently selected; switching
+  // tabs changes nothing until the user picks something in that tab.
+  late ShareMode _mode = widget.controller.shareMode;
 
   Future<void> _run(Future<void> Function() action) async {
     if (_busy) return;
@@ -60,7 +64,10 @@ class _IdleViewState extends State<_IdleView> {
     final c = widget.controller;
     final t = DcTheme.of(context);
     final text = Theme.of(context).textTheme;
-    final hasFolder = (c.folderName ?? '').isNotEmpty;
+    final folderPicked = c.hasSelection && c.shareMode == ShareMode.folder;
+    final filesPicked = c.hasSelection && c.shareMode == ShareMode.files && c.sharedFiles.isNotEmpty;
+    final ready = _mode == ShareMode.folder ? folderPicked : filesPicked;
+    final Future<void> Function() pick = _mode == ShareMode.folder ? c.pickFolder : c.pickFiles;
 
     return Scaffold(
       body: SafeArea(
@@ -90,42 +97,72 @@ class _IdleViewState extends State<_IdleView> {
               child: ListView(
                 padding: const EdgeInsets.only(top: 24),
                 children: [
-                  Text('Share a folder', style: text.headlineMedium?.copyWith(fontSize: 34, letterSpacing: -1)),
+                  Text(_mode == ShareMode.folder ? 'Share a folder' : 'Share files',
+                      style: text.headlineMedium?.copyWith(fontSize: 34, letterSpacing: -1)),
                   const SizedBox(height: 10),
                   Text('Wi-Fi  ·  Link  ·  PIN',
                       style: text.bodyMedium?.copyWith(fontWeight: FontWeight.w500)),
                   const SizedBox(height: 24),
-                  DcCard(
-                    child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
-                      const SectionLabel('Folder to share'),
-                      Row(children: [
-                        Container(
-                          width: 48,
-                          height: 48,
-                          decoration: BoxDecoration(
-                              color: hasFolder ? t.accentSoft : t.surface2,
-                              borderRadius: BorderRadius.circular(12)),
-                          child: Icon(Icons.folder_outlined,
-                              color: hasFolder ? t.accent : t.ink2, size: 24),
-                        ),
-                        const SizedBox(width: 12),
-                        Expanded(
-                          child: Text(
-                            hasFolder ? c.folderName! : 'No folder chosen yet',
-                            style: hasFolder ? text.titleMedium : text.bodyMedium,
-                            maxLines: 2,
-                            overflow: TextOverflow.ellipsis,
+                  _ModeSwitch(
+                    mode: _mode,
+                    onChanged: _busy ? null : (m) => setState(() => _mode = m),
+                  ),
+                  const SizedBox(height: 14),
+                  if (_mode == ShareMode.folder)
+                    DcCard(
+                      child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+                        const SectionLabel('Folder'),
+                        Row(children: [
+                          Container(
+                            width: 48,
+                            height: 48,
+                            decoration: BoxDecoration(
+                                color: folderPicked ? t.accentSoft : t.surface2,
+                                borderRadius: BorderRadius.circular(12)),
+                            child: Icon(Icons.folder_outlined,
+                                color: folderPicked ? t.accent : t.ink2, size: 24),
                           ),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: Text(
+                              folderPicked ? (c.folderName ?? 'Folder') : 'No folder yet',
+                              style: folderPicked ? text.titleMedium : text.bodyMedium,
+                              maxLines: 2,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ),
+                        ]),
+                        const SizedBox(height: 14),
+                        OutlinedButton.icon(
+                          onPressed: _busy ? null : () => _run(c.pickFolder),
+                          icon: Icon(folderPicked ? Icons.swap_horiz_rounded : Icons.create_new_folder_outlined),
+                          label: Text(folderPicked ? 'Change folder' : 'Choose folder'),
                         ),
                       ]),
-                      const SizedBox(height: 14),
-                      OutlinedButton.icon(
-                        onPressed: _busy ? null : () => _run(c.pickFolder),
-                        icon: Icon(hasFolder ? Icons.swap_horiz_rounded : Icons.create_new_folder_outlined),
-                        label: Text(hasFolder ? 'Change folder' : 'Choose a folder'),
-                      ),
-                    ]),
-                  ),
+                    )
+                  else
+                    DcCard(
+                      child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+                        SectionLabel(filesPicked ? _filesSummary(c.sharedFiles) : 'Files'),
+                        if (!filesPicked)
+                          Padding(
+                            padding: const EdgeInsets.only(bottom: 4),
+                            child: Text('No files yet', style: text.bodyMedium),
+                          ),
+                        if (filesPicked)
+                          for (var i = 0; i < c.sharedFiles.length; i++)
+                            _PickedFileRow(
+                              file: c.sharedFiles[i],
+                              onRemove: _busy ? null : () => c.removeSharedFile(i),
+                            ),
+                        const SizedBox(height: 10),
+                        OutlinedButton.icon(
+                          onPressed: _busy ? null : () => _run(c.pickFiles),
+                          icon: Icon(filesPicked ? Icons.swap_horiz_rounded : Icons.note_add_outlined),
+                          label: Text(filesPicked ? 'Choose other files' : 'Choose files'),
+                        ),
+                      ]),
+                    ),
                   if (c.error != null) ...[
                     const SizedBox(height: 16),
                     NoticeBanner(text: c.error!, isError: true),
@@ -134,12 +171,12 @@ class _IdleViewState extends State<_IdleView> {
               ),
             ),
             FilledButton.icon(
-              onPressed: _busy ? null : () => _run(hasFolder ? c.start : c.pickFolder),
+              onPressed: _busy ? null : () => _run(ready ? c.start : pick),
               icon: _busy
                   ? const SizedBox(
                       width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
-                  : Icon(hasFolder ? Icons.wifi_tethering_rounded : Icons.folder_open_rounded),
-              label: Text(hasFolder ? 'Start sharing' : 'Choose a folder to share'),
+                  : Icon(ready ? Icons.wifi_tethering_rounded : Icons.add_rounded),
+              label: Text(ready ? 'Start sharing' : (_mode == ShareMode.folder ? 'Choose a folder' : 'Choose files')),
             ),
             const SizedBox(height: 10),
             Text('View & download only',
@@ -147,6 +184,86 @@ class _IdleViewState extends State<_IdleView> {
           ]),
         ),
       ),
+    );
+  }
+}
+
+String _filesSummary(List<SharedFile> files) {
+  final total = files.fold<int>(0, (s, f) => s + f.size);
+  return '${files.length} ${files.length == 1 ? 'file' : 'files'} · ${formatBytes(total)}';
+}
+
+String formatBytes(int b) {
+  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  var v = b.toDouble();
+  var i = 0;
+  while (v >= 1024 && i < units.length - 1) {
+    v /= 1024;
+    i++;
+  }
+  return i == 0 ? '$b B' : '${v.toStringAsFixed(v < 10 ? 1 : 0)} ${units[i]}';
+}
+
+/// Folder | Files segmented switch.
+class _ModeSwitch extends StatelessWidget {
+  const _ModeSwitch({required this.mode, required this.onChanged});
+  final ShareMode mode;
+  final ValueChanged<ShareMode>? onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      width: double.infinity,
+      child: SegmentedButton<ShareMode>(
+        showSelectedIcon: false,
+        segments: const [
+          ButtonSegment(value: ShareMode.folder, icon: Icon(Icons.folder_outlined), label: Text('Folder')),
+          ButtonSegment(value: ShareMode.files, icon: Icon(Icons.description_outlined), label: Text('Files')),
+        ],
+        selected: {mode},
+        onSelectionChanged: onChanged == null ? null : (s) => onChanged!(s.first),
+        style: ButtonStyle(
+          minimumSize: const WidgetStatePropertyAll(Size(0, 44)),
+          textStyle: const WidgetStatePropertyAll(TextStyle(fontWeight: FontWeight.w600, fontSize: 14)),
+        ),
+      ),
+    );
+  }
+}
+
+/// One picked file with a remove button.
+class _PickedFileRow extends StatelessWidget {
+  const _PickedFileRow({required this.file, required this.onRemove});
+  final SharedFile file;
+  final VoidCallback? onRemove;
+
+  @override
+  Widget build(BuildContext context) {
+    final t = DcTheme.of(context);
+    final text = Theme.of(context).textTheme;
+    return SizedBox(
+      height: 52,
+      child: Row(children: [
+        Container(
+          width: 36,
+          height: 36,
+          decoration: BoxDecoration(color: t.surface2, borderRadius: BorderRadius.circular(9)),
+          child: Icon(Icons.description_outlined, size: 18, color: t.ink2),
+        ),
+        const SizedBox(width: 12),
+        Expanded(
+          child: Column(crossAxisAlignment: CrossAxisAlignment.start, mainAxisAlignment: MainAxisAlignment.center, children: [
+            Text(file.name, maxLines: 1, overflow: TextOverflow.ellipsis,
+                style: TextStyle(fontSize: 15, fontWeight: FontWeight.w500, color: t.ink)),
+            Text(formatBytes(file.size), style: text.bodySmall),
+          ]),
+        ),
+        IconButton(
+          tooltip: 'Remove ${file.name}',
+          icon: const Icon(Icons.close_rounded, size: 20),
+          onPressed: onRemove,
+        ),
+      ]),
     );
   }
 }

@@ -39,14 +39,15 @@ String? guessMime(String name) => lookupMimeType(name);
 /// [FileSource] backed by a `dart:io` directory.
 class IoFileSource extends FileSource {
   IoFileSource(this.root, {String? displayName})
-      : displayName = displayName ?? root.uri.pathSegments.where((s) => s.isNotEmpty).lastOrNull ?? root.path;
+    : displayName = displayName ?? root.uri.pathSegments.where((s) => s.isNotEmpty).lastOrNull ?? root.path;
 
   final Directory root;
   @override
   final String displayName;
 
-  String _abs(String path) =>
-      path == '/' ? root.path : '${root.path}${Platform.pathSeparator}${path.substring(1).replaceAll('/', Platform.pathSeparator)}';
+  String _abs(String path) => path == '/'
+      ? root.path
+      : '${root.path}${Platform.pathSeparator}${path.substring(1).replaceAll('/', Platform.pathSeparator)}';
 
   @override
   Future<List<FileEntry>> list(String path) async {

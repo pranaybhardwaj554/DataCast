@@ -7,6 +7,9 @@ import 'package:datacast/server/datacast_server.dart';
 import 'package:datacast/server/path_utils.dart';
 import 'package:datacast/server/pin_auth.dart';
 import 'package:datacast/services/file_source.dart';
+import 'package:datacast/models/shared_file.dart';
+import 'package:datacast/services/platform_bridge.dart';
+import 'package:datacast/services/selection_file_source.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 
@@ -89,10 +92,12 @@ void main() {
     expect(body['name'], 'Shared');
     final names = [for (final e in body['entries']) e['name']];
     expect(names, ['Photos', 'hello.txt']);
-    final sub = jsonDecode((await http.get(
-      base.replace(path: '/api/files', queryParameters: {'path': '/Photos'}),
-      headers: {'cookie': 'dc_token=$token'},
-    )).body);
+    final sub = jsonDecode(
+      (await http.get(
+        base.replace(path: '/api/files', queryParameters: {'path': '/Photos'}),
+        headers: {'cookie': 'dc_token=$token'},
+      )).body,
+    );
     expect(sub['entries'].single['path'], '/Photos/a b ü.jpg');
     expect(sub['entries'].single['size'], 1000);
     expect(sub['entries'].single['mime'], 'image/jpeg');
@@ -100,24 +105,33 @@ void main() {
 
   test('rejects path traversal', () async {
     final token = await login();
-    final r = await http.get(base.replace(path: '/api/files', queryParameters: {'path': '/../'}),
-        headers: {'authorization': 'Bearer $token'});
+    final r = await http.get(
+      base.replace(path: '/api/files', queryParameters: {'path': '/../'}),
+      headers: {'authorization': 'Bearer $token'},
+    );
     expect(r.statusCode, 400);
   });
 
   test('download and ranged raw', () async {
     final token = await login();
     final h = {'authorization': 'Bearer $token'};
-    var r = await http.get(base.replace(path: '/api/download', queryParameters: {'path': '/hello.txt'}), headers: h);
+    var r = await http.get(
+      base.replace(path: '/api/download', queryParameters: {'path': '/hello.txt'}),
+      headers: h,
+    );
     expect(r.body, 'Hello, DataCast!');
     expect(r.headers['content-disposition'], startsWith('attachment;'));
-    r = await http.get(base.replace(path: '/api/raw', queryParameters: {'path': '/Photos/a b ü.jpg'}),
-        headers: {...h, 'range': 'bytes=10-19'});
+    r = await http.get(
+      base.replace(path: '/api/raw', queryParameters: {'path': '/Photos/a b ü.jpg'}),
+      headers: {...h, 'range': 'bytes=10-19'},
+    );
     expect(r.statusCode, 206);
     expect(r.bodyBytes, List.generate(10, (i) => i + 10));
     expect(r.headers['content-range'], 'bytes 10-19/1000');
-    r = await http.get(base.replace(path: '/api/raw', queryParameters: {'path': '/hello.txt'}),
-        headers: {...h, 'range': 'bytes=500-'});
+    r = await http.get(
+      base.replace(path: '/api/raw', queryParameters: {'path': '/hello.txt'}),
+      headers: {...h, 'range': 'bytes=500-'},
+    );
     expect(r.statusCode, 416);
   });
 
@@ -143,13 +157,20 @@ void main() {
 
   test('zip download is a valid archive', () async {
     final token = await login();
-    final r = await http.get(base.replace(path: '/api/zip', queryParameters: {'path': '/'}),
-        headers: {'authorization': 'Bearer $token'});
+    final r = await http.get(
+      base.replace(path: '/api/zip', queryParameters: {'path': '/'}),
+      headers: {'authorization': 'Bearer $token'},
+    );
     expect(r.statusCode, 200);
     final zipFile = File('${tmp.path}/../dc_test_out.zip');
     await zipFile.writeAsBytes(r.bodyBytes);
     final out = Directory('${tmp.path}_unzipped');
-    final res = await Process.run('python3', ['-c', 'import zipfile,sys; z=zipfile.ZipFile(sys.argv[1]); assert z.testzip() is None; z.extractall(sys.argv[2]); print(sorted(z.namelist()))', zipFile.path, out.path]);
+    final res = await Process.run('python3', [
+      '-c',
+      'import zipfile,sys; z=zipfile.ZipFile(sys.argv[1]); assert z.testzip() is None; z.extractall(sys.argv[2]); print(sorted(z.namelist()))',
+      zipFile.path,
+      out.path,
+    ]);
     expect(res.exitCode, 0, reason: res.stderr.toString());
     expect(res.stdout.toString(), contains('Photos/a b ü.jpg'));
     expect(await File('${out.path}/hello.txt').readAsString(), 'Hello, DataCast!');
@@ -162,5 +183,23 @@ void main() {
     expect(normalizeSharePath('a//b/'), '/a/b');
     expect(() => normalizeSharePath('/a/../b'), throwsA(isA<InvalidPathException>()));
     expect(parseRange('bytes=-5', 10), const ByteRange(5, 9));
+  });
+
+  test('selected files are served as a flat folder', () async {
+    TestWidgetsFlutterBinding.ensureInitialized();
+    final a = File('${tmp.path}/hello.txt');
+    final b = File('${tmp.path}/Photos/a b ü.jpg');
+    final c = await File('${tmp.path}/Photos/hello.txt').writeAsString('second');
+    final sel = SelectionFileSource(PlatformBridge(), [
+      SharedFile(uri: a.path, name: 'hello.txt'),
+      SharedFile(uri: b.path, name: 'a b ü.jpg'),
+      SharedFile(uri: c.path, name: 'hello.txt'),
+    ], displayName: '3 files');
+    final names = [for (final e in await sel.list('/')) e.name]..sort();
+    expect(names, ['a b ü.jpg', 'hello (2).txt', 'hello.txt']);
+    expect((await sel.stat('/hello (2).txt'))!.size, 6);
+    expect(await sel.stat('/Photos'), isNull);
+    expect(String.fromCharCodes(await sel.read('/hello (2).txt').expand((x) => x).toList()), 'second');
+    expect(() => sel.list('/sub'), throwsA(isA<FileNotFound>()));
   });
 }

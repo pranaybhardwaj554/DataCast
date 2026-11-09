@@ -21,12 +21,12 @@ class PeerDevice {
   String get url => 'http://$ip:$port/';
 
   Map<String, Object?> toJson() => {
-        'deviceId': deviceId,
-        'name': name,
-        'ip': ip,
-        'port': port,
-        'platform': platform,
-        'url': url,
-        'self': self,
-      };
+    'deviceId': deviceId,
+    'name': name,
+    'ip': ip,
+    'port': port,
+    'platform': platform,
+    'url': url,
+    'self': self,
+  };
 }

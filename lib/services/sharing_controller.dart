@@ -6,6 +6,7 @@ import 'package:flutter/foundation.dart';
 
 import '../models/device_identity.dart';
 import '../models/peer_device.dart';
+import '../models/shared_file.dart';
 import '../server/datacast_server.dart';
 import '../server/pin_auth.dart';
 import 'discovery_service.dart';
@@ -13,6 +14,7 @@ import 'file_source.dart';
 import 'network_utils.dart';
 import 'platform_bridge.dart';
 import 'saf_file_source.dart';
+import 'selection_file_source.dart';
 import 'settings_store.dart';
 
 /// App state for sharing a folder. The UI listens to this and calls its
@@ -23,8 +25,8 @@ class SharingController extends ChangeNotifier {
     required this.bridge,
     required AssetLoader assets,
     DiscoveryService? discovery,
-  })  : _discovery = discovery ?? BonsoirDiscoveryService(),
-        _assets = assets; // ignore: prefer_initializing_formals
+  }) : _discovery = discovery ?? BonsoirDiscoveryService(),
+       _assets = assets; // ignore: prefer_initializing_formals
 
   final SettingsStore settings;
   final PlatformBridge bridge;
@@ -49,9 +51,27 @@ class SharingController extends ChangeNotifier {
   /// True while starting or stopping.
   bool get busy => _busy;
 
-  /// Name of the shared folder, or null if none picked yet.
-  String? get folderName => settings.folderName;
-  bool get hasFolder => settings.folderUri != null;
+  /// Whether a whole folder or individually picked files are shared.
+  ShareMode get shareMode => settings.shareMode;
+
+  /// Files picked in [ShareMode.files] (empty in folder mode).
+  List<SharedFile> get sharedFiles => shareMode == ShareMode.files ? settings.sharedFiles : const [];
+
+  /// What is being shared: the folder's name, or e.g. "3 files". Null if
+  /// nothing is selected yet.
+  String? get folderName {
+    if (shareMode == ShareMode.files) {
+      final n = settings.sharedFiles.length;
+      return n == 0 ? null : (n == 1 ? '1 file' : '$n files');
+    }
+    return settings.folderUri == null ? null : settings.folderName;
+  }
+
+  /// True when a folder or at least one file is selected.
+  bool get hasSelection => shareMode == ShareMode.files ? settings.sharedFiles.isNotEmpty : settings.folderUri != null;
+
+  /// Same as [hasSelection]; kept for older UI code.
+  bool get hasFolder => hasSelection;
 
   /// Address other devices open in their browser, e.g. `http://192.168.1.5:8080`.
   String? _url;
@@ -93,11 +113,7 @@ class SharingController extends ChangeNotifier {
         name = 'DataCast device';
       }
     }
-    _identity = DeviceIdentity(
-      deviceId: id,
-      name: name,
-      platform: Platform.operatingSystem,
-    );
+    _identity = DeviceIdentity(deviceId: id, name: name, platform: Platform.operatingSystem);
     final pin = settings.pin;
     _auth = PinAuth(pin: pin != null && RegExp(r'^\d{4}$').hasMatch(pin) ? pin : null);
     settings.pin = _auth.pin;
@@ -114,31 +130,60 @@ class SharingController extends ChangeNotifier {
       if (picked == null) return;
       settings
         ..folderUri = picked.uri
-        ..folderName = picked.name;
-      _source = null;
+        ..folderName = picked.name
+        ..shareMode = ShareMode.folder;
       _error = null;
+      _refreshSource();
       notifyListeners();
     } catch (e) {
       _fail('Could not open the folder picker: $e');
     }
   }
 
+  /// Picks one or more files to share instead of a folder. Replaces the
+  /// current selection.
+  Future<void> pickFiles() async {
+    try {
+      final picked = await bridge.pickFiles();
+      if (picked == null || picked.isEmpty) return;
+      settings
+        ..sharedFiles = picked
+        ..shareMode = ShareMode.files;
+      _error = null;
+      _refreshSource();
+      notifyListeners();
+    } catch (e) {
+      _fail('Could not open the file picker: $e');
+    }
+  }
+
+  /// Stops sharing one picked file. Takes effect immediately, even while
+  /// sharing. Removing the last file stops sharing.
+  Future<void> removeSharedFile(int index) async {
+    final files = [...settings.sharedFiles];
+    if (shareMode != ShareMode.files || index < 0 || index >= files.length) return;
+    files.removeAt(index);
+    settings.sharedFiles = files;
+    if (files.isEmpty && isSharing) {
+      await stop();
+    } else {
+      _refreshSource();
+    }
+    notifyListeners();
+  }
+
   Future<void> start() async {
     if (isSharing || _busy) return;
-    final uri = settings.folderUri;
-    if (uri == null) return _fail('Pick a folder to share first.');
+    if (!hasSelection) return _fail('Pick a folder or some files to share first.');
     _setBusy(true);
     try {
       final ip = await findLocalIpv4();
       if (ip == null) {
         return _fail('Connect to Wi-Fi (or turn on your hotspot) to start sharing.');
       }
-      if (Platform.isAndroid && !await bridge.hasFolderAccess(uri)) {
-        settings.folderUri = null;
-        return _fail('DataCast lost access to the folder. Please pick it again.');
-      }
+      if (!await _checkAccess()) return;
       if (settings.newPinEachStart) settings.pin = _auth.regeneratePin();
-      _source = _makeSource(uri);
+      _source = _makeSource();
       final server = DataCastServer(
         auth: _auth,
         identity: () => _identity,
@@ -146,6 +191,7 @@ class SharingController extends ChangeNotifier {
         peers: () => _discovery.peers,
         assets: _assets,
         allowZip: () => settings.allowZip,
+        mode: () => shareMode.name,
       );
       final port = await server.start(preferredPort: settings.port, localIp: ip);
       _server = server;
@@ -224,7 +270,42 @@ class SharingController extends ChangeNotifier {
 
   // ------------------------------------------------------------------ helpers
 
-  FileSource _makeSource(String uri) {
+  /// Drops anything the app can no longer read. Returns false (with an
+  /// error set) if nothing is left to share.
+  Future<bool> _checkAccess() async {
+    if (!Platform.isAndroid) return true;
+    if (shareMode == ShareMode.files) {
+      final files = settings.sharedFiles;
+      final ok = <SharedFile>[];
+      for (final f in files) {
+        if (!f.uri.startsWith('content://') || await bridge.hasDocAccess(f.uri)) ok.add(f);
+      }
+      if (ok.length != files.length) settings.sharedFiles = ok;
+      if (ok.isEmpty) {
+        _fail('DataCast lost access to those files. Please pick them again.');
+        return false;
+      }
+      return true;
+    }
+    final uri = settings.folderUri!;
+    if (uri.startsWith('content://') && !await bridge.hasFolderAccess(uri)) {
+      settings.folderUri = null;
+      _fail('DataCast lost access to the folder. Please pick it again.');
+      return false;
+    }
+    return true;
+  }
+
+  /// Swaps the shared content in place while sharing.
+  void _refreshSource() {
+    if (isSharing && hasSelection) _source = _makeSource();
+  }
+
+  FileSource _makeSource() {
+    if (shareMode == ShareMode.files) {
+      return SelectionFileSource(bridge, settings.sharedFiles, displayName: folderName ?? 'Shared files');
+    }
+    final uri = settings.folderUri!;
     final name = settings.folderName ?? 'Shared folder';
     if (uri.startsWith('content://')) return SafFileSource(bridge, uri, name);
     return IoFileSource(Directory(uri), displayName: name);

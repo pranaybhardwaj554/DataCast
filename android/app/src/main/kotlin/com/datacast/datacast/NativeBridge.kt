@@ -25,6 +25,7 @@ class NativeBridge(private val context: Context, messenger: BinaryMessenger) :
     private val io = Executors.newFixedThreadPool(4)
     private val main = Handler(Looper.getMainLooper())
     private var pendingPick: MethodChannel.Result? = null
+    private var pendingFiles: MethodChannel.Result? = null
 
     var activity: Activity? = null
         set(value) {
@@ -47,6 +48,17 @@ class NativeBridge(private val context: Context, messenger: BinaryMessenger) :
     override fun onMethodCall(call: MethodCall, result: MethodChannel.Result) {
         when (call.method) {
             "pickFolder" -> pickFolder(result)
+            "pickFiles" -> pickFiles(result)
+            "hasDocAccess" -> background(result) { storage.hasDocAccess(uriArg(call)) }
+            "docStat" -> background(result) { storage.docStat(uriArg(call)) }
+            "docOpenFd" -> background(result) { storage.docOpenFd(uriArg(call)) }
+            "docReadChunk" -> background(result) {
+                storage.docReadChunk(
+                    uriArg(call),
+                    (call.argument<Number>("offset") ?: 0).toLong(),
+                    call.argument<Int>("length") ?: 0,
+                )
+            }
             "deviceName" -> result.success(deviceName())
             "startService" -> {
                 requestNotificationPermission()
@@ -94,6 +106,47 @@ class NativeBridge(private val context: Context, messenger: BinaryMessenger) :
         )
         @Suppress("DEPRECATION")
         a.startActivityForResult(intent, PICK_FOLDER_REQUEST)
+    }
+
+    private fun pickFiles(result: MethodChannel.Result) {
+        val a = activity ?: return result.error("no_activity", "App is not in the foreground", null)
+        pendingFiles?.success(null)
+        pendingFiles = result
+        val intent = Intent(Intent.ACTION_OPEN_DOCUMENT)
+            .addCategory(Intent.CATEGORY_OPENABLE)
+            .setType("*/*")
+            .putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true)
+            .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION)
+        @Suppress("DEPRECATION")
+        a.startActivityForResult(intent, PICK_FILES_REQUEST)
+    }
+
+    fun onFilesPicked(data: Intent?) {
+        val result = pendingFiles ?: return
+        pendingFiles = null
+        val uris = ArrayList<Uri>()
+        val clip = data?.clipData
+        if (clip != null) {
+            for (i in 0 until clip.itemCount) clip.getItemAt(i).uri?.let(uris::add)
+        } else {
+            data?.data?.let(uris::add)
+        }
+        if (uris.isEmpty()) return result.success(null)
+        io.execute {
+            try {
+                val files = uris.mapNotNull { uri ->
+                    try {
+                        storage.takeDocPermission(uri)
+                    } catch (_: SecurityException) {
+                        // Some providers don't offer persistable access; it still works until restart.
+                    }
+                    storage.docStat(uri)?.let { it + ("uri" to uri.toString()) }
+                }
+                main.post { result.success(files) }
+            } catch (e: Exception) {
+                main.post { result.error("pick_failed", e.message, null) }
+            }
+        }
     }
 
     fun onFolderPicked(uri: Uri?) {
@@ -146,6 +199,7 @@ class NativeBridge(private val context: Context, messenger: BinaryMessenger) :
 
     companion object {
         const val PICK_FOLDER_REQUEST = 4242
+        const val PICK_FILES_REQUEST = 4244
 
         @Volatile
         var instance: NativeBridge? = null

@@ -22,11 +22,11 @@ class FileEntry {
   final String? mime;
 
   Map<String, Object?> toJson() => {
-        'name': name,
-        'path': path,
-        'isDir': isDir,
-        'size': size,
-        'modified': modified?.toUtc().toIso8601String(),
-        'mime': mime,
-      };
+    'name': name,
+    'path': path,
+    'isDir': isDir,
+    'size': size,
+    'modified': modified?.toUtc().toIso8601String(),
+    'mime': mime,
+  };
 }

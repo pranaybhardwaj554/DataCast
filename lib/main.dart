@@ -5,6 +5,7 @@ import 'services/platform_bridge.dart';
 import 'services/settings_store.dart';
 import 'services/sharing_controller.dart';
 import 'ui/screens/home_screen.dart';
+import 'ui/theme/app_theme.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -36,7 +37,8 @@ class DataCastApp extends StatelessWidget {
   Widget build(BuildContext context) {
     return MaterialApp(
       title: 'DataCast',
-      theme: ThemeData(colorSchemeSeed: Colors.teal, useMaterial3: true),
+      theme: AppTheme.light(),
+      darkTheme: AppTheme.dark(),
       home: HomeScreen(controller: controller),
     );
   }

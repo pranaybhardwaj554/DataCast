@@ -32,7 +32,9 @@ class DataCastServer {
     required this.peers,
     required this.assets,
     bool Function()? allowZip,
-  }) : allowZip = allowZip ?? (() => false);
+    String Function()? mode,
+  }) : allowZip = allowZip ?? (() => false),
+       mode = mode ?? (() => 'folder');
 
   final PinAuth auth;
 
@@ -49,6 +51,9 @@ class DataCastServer {
   /// Whether visitors may download whole folders as ZIP.
   final bool Function() allowZip;
 
+  /// `folder` or `files` (individually picked files in a flat root).
+  final String Function() mode;
+
   HttpServer? _server;
   String? _localIp;
 
@@ -57,11 +62,7 @@ class DataCastServer {
 
   /// Starts listening on all IPv4 interfaces. Tries [preferredPort] and the
   /// next few ports, then falls back to any free port. Returns the port.
-  Future<int> start({
-    int preferredPort = 8080,
-    String? localIp,
-    InternetAddress? address,
-  }) async {
+  Future<int> start({int preferredPort = 8080, String? localIp, InternetAddress? address}) async {
     if (_server != null) return _server!.port;
     _localIp = localIp;
     final bindAddress = address ?? InternetAddress.anyIPv4;
@@ -107,7 +108,8 @@ class DataCastServer {
 
   // ---------------------------------------------------------------- middleware
 
-  Middleware get _errors => (inner) => (request) async {
+  Middleware get _errors =>
+      (inner) => (request) async {
         try {
           return await inner(request);
         } on InvalidPathException {
@@ -117,24 +119,27 @@ class DataCastServer {
         }
       };
 
-  Middleware get _securityHeaders => (inner) => (request) async {
+  Middleware get _securityHeaders =>
+      (inner) => (request) async {
         final res = await inner(request);
-        return res.change(headers: {
-          'x-content-type-options': 'nosniff',
-          'referrer-policy': 'no-referrer',
-          'x-frame-options': 'SAMEORIGIN',
-        });
+        return res.change(
+          headers: {
+            'x-content-type-options': 'nosniff',
+            'referrer-policy': 'no-referrer',
+            'x-frame-options': 'SAMEORIGIN',
+          },
+        );
       };
 
   Handler _guard(FutureOr<Response> Function(Request) h) => (request) {
-        if (!auth.validate(_token(request))) {
-          return _json({'error': 'PIN required'}, 401);
-        }
-        if (source() == null) {
-          return _json({'error': 'No folder is being shared'}, 503);
-        }
-        return h(request);
-      };
+    if (!auth.validate(_token(request))) {
+      return _json({'error': 'PIN required'}, 401);
+    }
+    if (source() == null) {
+      return _json({'error': 'No folder is being shared'}, 503);
+    }
+    return h(request);
+  };
 
   // ------------------------------------------------------------------ handlers
 
@@ -149,6 +154,7 @@ class DataCastServer {
       'sharing': source() != null,
       'folderName': source()?.displayName,
       'allowZip': allowZip(),
+      'mode': mode(),
       'apiVersion': apiVersion,
     });
   }
@@ -157,14 +163,7 @@ class DataCastServer {
     final id = identity();
     final selfIp = _localIp ?? _hostOf(r);
     final list = <PeerDevice>[
-      PeerDevice(
-        deviceId: id.deviceId,
-        name: id.name,
-        ip: selfIp,
-        port: port ?? 0,
-        platform: id.platform,
-        self: true,
-      ),
+      PeerDevice(deviceId: id.deviceId, name: id.name, ip: selfIp, port: port ?? 0, platform: id.platform, self: true),
       ...peers().where((p) => p.deviceId != id.deviceId),
     ];
     return _jsonList([for (final d in list) d.toJson()]);
@@ -189,9 +188,7 @@ class DataCastServer {
     final result = auth.attempt(_clientKey(r), pin?.trim());
     switch (result) {
       case AuthGranted(:final token):
-        return _json({'token': token}, 200, {
-          'set-cookie': '$_cookieName=$token; Path=/; HttpOnly; SameSite=Strict',
-        });
+        return _json({'token': token}, 200, {'set-cookie': '$_cookieName=$token; Path=/; HttpOnly; SameSite=Strict'});
       case AuthDenied(:final attemptsLeft):
         return _json({'error': 'Wrong PIN', 'attemptsLeft': attemptsLeft}, 401);
       case AuthLocked(:final retryAfter):
@@ -204,9 +201,8 @@ class DataCastServer {
     }
   }
 
-  Response _logout(Request r) => _json({'ok': true}, 200, {
-        'set-cookie': '$_cookieName=; Path=/; Max-Age=0; HttpOnly; SameSite=Strict',
-      });
+  Response _logout(Request r) =>
+      _json({'ok': true}, 200, {'set-cookie': '$_cookieName=; Path=/; Max-Age=0; HttpOnly; SameSite=Strict'});
 
   Future<Response> _files(Request r) async {
     final path = normalizeSharePath(r.url.queryParameters['path']);
@@ -254,17 +250,10 @@ class DataCastServer {
       return Response(
         206,
         body: isHead ? null : src.read(path, start: range.start, end: range.end),
-        headers: {
-          ...headers,
-          'content-length': '$len',
-          'content-range': 'bytes ${range.start}-${range.end}/$size',
-        },
+        headers: {...headers, 'content-length': '$len', 'content-range': 'bytes ${range.start}-${range.end}/$size'},
       );
     }
-    return Response.ok(
-      isHead || size == 0 ? null : src.read(path),
-      headers: {...headers, 'content-length': '$size'},
-    );
+    return Response.ok(isHead || size == 0 ? null : src.read(path), headers: {...headers, 'content-length': '$size'});
   }
 
   Future<Response> _zip(Request r) async {
@@ -275,11 +264,14 @@ class DataCastServer {
     if (entry == null) throw FileNotFound(path);
     if (!entry.isDir) return _json({'error': 'Not a folder'}, 400);
     final name = '${path == '/' ? src.displayName : baseName(path)}.zip';
-    return Response.ok(zipFolder(src, path), headers: {
-      'content-type': 'application/zip',
-      'content-disposition': _disposition(name, true),
-      'cache-control': 'no-store',
-    });
+    return Response.ok(
+      zipFolder(src, path),
+      headers: {
+        'content-type': 'application/zip',
+        'content-disposition': _disposition(name, true),
+        'cache-control': 'no-store',
+      },
+    );
   }
 
   Future<Response> _static(Request r) async {
@@ -342,16 +334,11 @@ class DataCastServer {
     return '$type; filename="$ascii"; filename*=UTF-8\'\'${Uri.encodeComponent(name)}';
   }
 
-  static Response _json(Object body, [int status = 200, Map<String, String>? extraHeaders]) =>
-      Response(
-        status,
-        body: jsonEncode(body),
-        headers: {
-          'content-type': 'application/json; charset=utf-8',
-          'cache-control': 'no-store',
-          ...?extraHeaders,
-        },
-      );
+  static Response _json(Object body, [int status = 200, Map<String, String>? extraHeaders]) => Response(
+    status,
+    body: jsonEncode(body),
+    headers: {'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store', ...?extraHeaders},
+  );
 
   static Response _jsonList(List<Object?> body) => _json(body);
 }
@@ -362,8 +349,7 @@ class ByteRange {
   final int start;
   final int end;
   @override
-  bool operator ==(Object other) =>
-      other is ByteRange && other.start == start && other.end == end;
+  bool operator ==(Object other) => other is ByteRange && other.start == start && other.end == end;
   @override
   int get hashCode => Object.hash(start, end);
 }

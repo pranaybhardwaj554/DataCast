@@ -41,8 +41,8 @@ class PinAuth {
     this.activeWindow = const Duration(minutes: 2),
     DateTime Function()? clock,
     Random? random,
-  })  : _clock = clock ?? DateTime.now,
-        _random = random ?? Random.secure() {
+  }) : _clock = clock ?? DateTime.now,
+       _random = random ?? Random.secure() {
     _pin = pin ?? generatePin(_random);
   }
 
@@ -133,9 +133,7 @@ class PinAuth {
 
   int get connectedClients {
     final now = _clock();
-    return _tokens.values
-        .where((t) => now.difference(t) <= activeWindow)
-        .length;
+    return _tokens.values.where((t) => now.difference(t) <= activeWindow).length;
   }
 
   String _newToken() {

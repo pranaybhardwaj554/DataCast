@@ -1,5 +1,7 @@
 import 'package:flutter/services.dart';
 
+import '../models/shared_file.dart';
+
 /// A folder chosen in the system picker.
 class PickedFolder {
   const PickedFolder(this.uri, this.name);
@@ -12,8 +14,7 @@ class PickedFolder {
 /// One method channel covers the folder picker, Storage Access Framework
 /// reads, the foreground service and device info.
 class PlatformBridge {
-  PlatformBridge({MethodChannel? channel})
-      : _channel = channel ?? const MethodChannel('datacast/native') {
+  PlatformBridge({MethodChannel? channel}) : _channel = channel ?? const MethodChannel('datacast/native') {
     _channel.setMethodCallHandler(_onNativeCall);
   }
 
@@ -33,15 +34,34 @@ class PlatformBridge {
     return PickedFolder(r['uri'] as String, r['name'] as String);
   }
 
+  /// Opens the system file picker (multi-select). Returns null if cancelled.
+  Future<List<SharedFile>?> pickFiles() async {
+    final r = await _channel.invokeListMethod<Object?>('pickFiles');
+    if (r == null) return null;
+    return [for (final e in r) SharedFile.fromJson(Map<String, Object?>.from(e as Map))];
+  }
+
+  /// Whether the app still has read access to a picked file.
+  Future<bool> hasDocAccess(String uri) async =>
+      await _channel.invokeMethod<bool>('hasDocAccess', {'uri': uri}) ?? false;
+
+  /// Current metadata of a single picked file ({name, size, mime, modified}).
+  Future<Map<String, Object?>?> docStat(String uri) =>
+      _channel.invokeMapMethod<String, Object?>('docStat', {'uri': uri});
+
+  Future<int?> docOpenFd(String uri) => _channel.invokeMethod<int>('docOpenFd', {'uri': uri});
+
+  Future<Uint8List> docReadChunk(String uri, int offset, int length) async =>
+      await _channel.invokeMethod<Uint8List>('docReadChunk', {'uri': uri, 'offset': offset, 'length': length}) ??
+      Uint8List(0);
+
   /// Whether the app still has read access to a previously picked folder.
   Future<bool> hasFolderAccess(String uri) async =>
       await _channel.invokeMethod<bool>('hasFolderAccess', {'uri': uri}) ?? false;
 
-  Future<String> deviceName() async =>
-      await _channel.invokeMethod<String>('deviceName') ?? 'Android device';
+  Future<String> deviceName() async => await _channel.invokeMethod<String>('deviceName') ?? 'Android device';
 
-  Future<void> startForegroundService({required String text}) =>
-      _channel.invokeMethod('startService', {'text': text});
+  Future<void> startForegroundService({required String text}) => _channel.invokeMethod('startService', {'text': text});
 
   /// Keeps the screen from turning off while the app is visible.
   Future<void> setKeepScreenOn(bool on) => _channel.invokeMethod('setKeepScreenOn', {'on': on});
@@ -67,9 +87,11 @@ class PlatformBridge {
 
   /// Slow fallback for providers whose files cannot be opened as a descriptor.
   Future<Uint8List> readChunk(String treeUri, String path, int offset, int length) async =>
-      await _channel.invokeMethod<Uint8List>(
-        'readChunk',
-        {'uri': treeUri, 'path': path, 'offset': offset, 'length': length},
-      ) ??
+      await _channel.invokeMethod<Uint8List>('readChunk', {
+        'uri': treeUri,
+        'path': path,
+        'offset': offset,
+        'length': length,
+      }) ??
       Uint8List(0);
 }

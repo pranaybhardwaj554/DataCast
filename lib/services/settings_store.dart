@@ -1,11 +1,14 @@
+import 'dart:convert';
+
 import 'package:shared_preferences/shared_preferences.dart';
+
+import '../models/shared_file.dart';
 
 /// Persisted app settings.
 class SettingsStore {
   SettingsStore(this._prefs);
 
-  static Future<SettingsStore> load() async =>
-      SettingsStore(await SharedPreferences.getInstance());
+  static Future<SettingsStore> load() async => SettingsStore(await SharedPreferences.getInstance());
 
   final SharedPreferences _prefs;
 
@@ -25,6 +28,21 @@ class SettingsStore {
   String? get pin => _prefs.getString('pin');
   set pin(String? v) => _set('pin', v);
 
+  ShareMode get shareMode => _prefs.getString('shareMode') == 'files' ? ShareMode.files : ShareMode.folder;
+  set shareMode(ShareMode v) => _prefs.setString('shareMode', v.name);
+
+  List<SharedFile> get sharedFiles {
+    final raw = _prefs.getString('sharedFiles');
+    if (raw == null) return const [];
+    try {
+      return [for (final e in jsonDecode(raw) as List) SharedFile.fromJson(Map<String, Object?>.from(e as Map))];
+    } on Object {
+      return const [];
+    }
+  }
+
+  set sharedFiles(List<SharedFile> v) => _prefs.setString('sharedFiles', jsonEncode([for (final f in v) f.toJson()]));
+
   int get port => _prefs.getInt('port') ?? 8080;
   set port(int v) => _prefs.setInt('port', v);
 
@@ -37,6 +55,5 @@ class SettingsStore {
   bool get keepScreenOn => _prefs.getBool('keepScreenOn') ?? true;
   set keepScreenOn(bool v) => _prefs.setBool('keepScreenOn', v);
 
-  void _set(String key, String? v) =>
-      v == null ? _prefs.remove(key) : _prefs.setString(key, v);
+  void _set(String key, String? v) => v == null ? _prefs.remove(key) : _prefs.setString(key, v);
 }

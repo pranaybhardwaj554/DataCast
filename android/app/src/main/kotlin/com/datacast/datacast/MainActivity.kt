@@ -28,6 +28,10 @@ class MainActivity : FlutterActivity() {
             bridge.onFolderPicked(if (resultCode == RESULT_OK) data?.data else null)
             return
         }
+        if (requestCode == NativeBridge.PICK_FILES_REQUEST) {
+            bridge.onFilesPicked(if (resultCode == RESULT_OK) data else null)
+            return
+        }
         super.onActivityResult(requestCode, resultCode, data)
     }
 }

@@ -2,13 +2,15 @@
 
 Every device running DataCast serves this API on its own address (default port 8080, next free port if busy). The browser UI in `assets/web/` is served at `/`; unknown extension-less paths fall back to `index.html`.
 
+In `files` mode (the user picked individual files instead of a folder), the root `/` is a flat virtual folder holding just those files, with ` (2)`-style suffixes on duplicate names, and `folderName` reads like `3 files`.
+
 All paths are relative to the shared folder: `/` is the root, `/Photos/a.jpg` a file. Paths containing `..` or `.` segments are rejected with `400`.
 
 ## Public
 
 | Method | Path | Response |
 |---|---|---|
-| GET | `/api/info` | `{name, deviceId, platform, requiresPin, authenticated, sharing, folderName, allowZip, apiVersion}` |
+| GET | `/api/info` | `{name, deviceId, platform, requiresPin, authenticated, sharing, folderName, allowZip, mode, apiVersion}`. `mode` is `folder` or `files`. |
 | GET | `/api/devices` | `[{deviceId, name, ip, port, platform, url, self}]`. This device first (`self: true`), then devices found over mDNS (`_datacast._tcp`). To open another device, navigate to its `url`; each device has its own PIN. |
 | POST | `/api/auth` | Body `{"pin":"1234"}` (JSON or form). `200 {token}` and sets cookie `dc_token` (HttpOnly, SameSite=Strict). Wrong PIN: `401 {error, attemptsLeft}`. After 5 wrong PINs from one IP: `429 {error, retryAfterSec}`; the lockout starts at 30 s and doubles each time. |
 | POST | `/api/logout` | Clears the cookie. |
