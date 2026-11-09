@@ -217,6 +217,27 @@ void main() {
   });
 
   // Runs last: it initializes the Flutter test binding, which blocks real HTTP.
+  test('zip of a subfolder has entries relative to it', () async {
+    final token = await login();
+    final r = await http.get(
+      base.replace(path: '/api/zip', queryParameters: {'path': '/Photos'}),
+      headers: {'authorization': 'Bearer $token'},
+    );
+    expect(r.statusCode, 200);
+    expect(r.headers['content-disposition'], contains('Photos.zip'));
+    final zipFile = File('${tmp.path}/../dc_test_sub.zip');
+    await zipFile.writeAsBytes(r.bodyBytes);
+    final res = await Process.run('python3', [
+      '-c',
+      'import zipfile,sys; z=zipfile.ZipFile(sys.argv[1]); assert z.testzip() is None; print(sorted(z.namelist()))',
+      zipFile.path,
+    ]);
+    expect(res.exitCode, 0, reason: res.stderr.toString());
+    expect(res.stdout.toString().trim(), "['a b ü.jpg']");
+    await zipFile.delete();
+  });
+
+  // Keep last: it initializes the test binding, which breaks real HTTP.
   test('selected files are served as a flat folder', () async {
     TestWidgetsFlutterBinding.ensureInitialized();
     final a = File('${tmp.path}/hello.txt');

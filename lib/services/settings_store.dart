@@ -50,7 +50,7 @@ class SettingsStore {
   int get port => _prefs.getInt('port') ?? 8080;
   set port(int v) => _prefs.setInt('port', v);
 
-  bool get allowZip => _prefs.getBool('allowZip') ?? false;
+  bool get allowZip => _prefs.getBool('allowZip') ?? true;
   set allowZip(bool v) => _prefs.setBool('allowZip', v);
 
   bool get newPinEachStart => _prefs.getBool('newPinEachStart') ?? true;
