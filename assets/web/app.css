@@ -185,14 +185,45 @@ table.files { width: 100%; min-width: 520px; border-collapse: collapse; font-siz
 .pv-none { text-align: center; color: #A7ADBC; display: flex; flex-direction: column; gap: 12px; align-items: center; }
 .nav-btn { width: 48px; height: 48px; border-radius: 50%; border: none; background: #1A1D25; color: #F2F3F6; display: grid; place-items: center; cursor: pointer; flex-shrink: 0; }
 .nav-btn:disabled { opacity: .3; cursor: default; }
+.fname-text { display: flex; flex-direction: column; min-width: 0; }
+.fname-text > span:first-child { overflow-wrap: anywhere; }
+.fmeta { display: none; font-size: 12px; font-weight: 400; color: var(--ink-3); }
+
+/* Tablet and down */
+@media (max-width: 900px) {
+  .col-date { display: none; }
+  .fmeta { display: block; }
+  .col-size { display: none; }
+}
+/* Phone */
 @media (max-width: 640px) {
+  .view { padding-top: 20px; gap: 16px; }
   .nav-btn { position: absolute; bottom: 20px; }
   #pv-prev { left: 20px; } #pv-next { right: 20px; }
   .pv-stage { padding: 8px 8px 84px; position: relative; }
-  .col-date { display: none; }
-  .files td:nth-child(3) { display: none; }
+  .pv-bar .btn span, .pv-bar .btn { font-size: 14px; }
   table.files { min-width: 0; }
-  .search { max-width: none; order: 3; flex-basis: 100%; }
+  .files thead { display: none; }
+  .files td { padding: 6px 12px; }
+  .toolbar .h2 { flex: 1 1 auto; min-width: 0; font-size: 1.4rem; }
+  .search { max-width: none; order: 10; flex: 1 1 100%; }
+  #zip-btn { width: 40px; padding: 0; }
+  #zip-btn .zip-label { display: none; }
+  .file-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+  .device-grid { grid-template-columns: minmax(0, 1fr); }
+  .pin-card, .msg-card { padding: 24px 18px; }
+  .pin-inputs input { height: 58px; }
+  .link-strong { font-size: 13px; }
+}
+/* Large screens: more room for grids */
+@media (min-width: 1400px) {
+  .wrap { max-width: 1200px; }
+}
+/* Coarse pointers (touch): no hover lift, bigger targets */
+@media (hover: none) {
+  .device:hover { transform: none; }
+  .icon-btn { width: 44px; height: 44px; }
+  .seg button { width: 44px; height: 42px; }
 }
 
 /* Connection lost bar */

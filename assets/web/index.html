@@ -35,8 +35,8 @@
 <!-- View: devices -->
 <main id="view-devices" class="view wrap" hidden>
   <div class="stack-8">
-    <h1 class="h1">Devices sharing on this Wi-Fi</h1>
-    <p class="muted">Pick the one you want to browse. You will need the PIN shown on its screen.</p>
+    <h1 class="h1">Nearby devices</h1>
+    <p class="muted">Pick one · enter its PIN</p>
   </div>
   <div class="row-status">
     <span class="dot live"></span>
@@ -62,7 +62,7 @@
     </a>
     <div class="stack-6">
       <h1 class="h2" id="pin-device-name">This device</h1>
-      <p class="muted">Enter the 4-digit PIN shown on this device's DataCast screen.</p>
+      <p class="muted">PIN is on the phone screen</p>
     </div>
     <fieldset class="pin-inputs">
       <legend>PIN</legend>
@@ -73,7 +73,7 @@
     </fieldset>
     <p class="error" id="pin-error" role="alert" hidden></p>
     <button class="btn btn-primary btn-lg" type="submit" id="pin-submit">Unlock</button>
-    <p class="fineprint">You stay signed in on this browser until sharing stops.</p>
+    <p class="fineprint">Stays unlocked until sharing stops</p>
   </form>
 </main>
 
@@ -95,9 +95,9 @@
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
       </button>
     </div>
-    <a class="btn btn-primary" id="zip-btn" hidden>
+    <a class="btn btn-primary" id="zip-btn" aria-label="Download folder as zip" hidden>
       <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 21h14"/></svg>
-      Download folder (.zip)
+      <span class="zip-label">Download folder (.zip)</span>
     </a>
   </div>
   <div class="card table-box" id="list-box">

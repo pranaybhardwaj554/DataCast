@@ -219,10 +219,10 @@
     var grid = $('device-grid');
     grid.textContent = '';
     if (!list.length) {
-      $('devices-count').textContent = 'No devices found yet';
+      $('devices-count').textContent = 'Searching…';
       return;
     }
-    $('devices-count').textContent = list.length + (list.length === 1 ? ' device' : ' devices') + ' found · looking for more';
+    $('devices-count').textContent = list.length + ' found';
     list.sort(function (a, b) { return (b.self ? 1 : 0) - (a.self ? 1 : 0) || String(a.name).localeCompare(b.name); });
     list.forEach(function (d) {
       var isTablet = /ipad|tablet/i.test(d.platform || '') || /ipad/i.test(d.name || '');
@@ -344,6 +344,7 @@
   function renderCrumbs(path) {
     var nav = $('crumbs'); nav.textContent = '';
     var parts = path.split('/').filter(Boolean);
+    nav.hidden = parts.length === 0; // root: the title already says where we are
     var rootName = (state.info && state.info.folderName) || 'Shared folder';
     var acc = '';
     var items = [{ name: rootName, path: '/' }].concat(parts.map(function (p) { acc += '/' + p; return { name: p, path: acc }; }));
@@ -377,15 +378,18 @@
       var k = kindOf(e), p = entryPath(e);
       var nameBtn = el('button', { type: 'button', class: 'fname', onclick: function () { activate(e, list); } }, [
         el('span', { class: 'ficon ' + iconKind(k) }, [icon(iconKind(k))]),
-        el('span', { text: e.name })
+        el('span', { class: 'fname-text' }, [
+          el('span', { text: e.name }),
+          el('span', { class: 'fmeta', text: e.isDir ? 'Folder' : fmtSize(e.size) + ' · ' + fmtDate(e.modified) })
+        ])
       ]);
       var dl = e.isDir
         ? (state.info && state.info.allowZip ? el('a', { class: 'icon-btn', href: '/api/zip?path=' + q(p), 'aria-label': 'Download ' + e.name + ' as zip' }, [icon('download', 16)]) : null)
         : el('a', { class: 'icon-btn', href: downloadUrl(p), download: e.name, 'aria-label': 'Download ' + e.name }, [icon('download', 16)]);
       rows.appendChild(el('tr', null, [
         el('td', null, [nameBtn]),
-        el('td', { text: e.isDir ? '—' : fmtSize(e.size) }),
-        el('td', { text: fmtDate(e.modified) }),
+        el('td', { class: 'col-size', text: e.isDir ? '—' : fmtSize(e.size) }),
+        el('td', { class: 'col-date', text: fmtDate(e.modified) }),
         el('td', null, [dl])
       ]));
       var thumb = el('span', { class: 'tile-thumb' });
