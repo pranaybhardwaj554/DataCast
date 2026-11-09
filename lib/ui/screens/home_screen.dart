@@ -595,7 +595,7 @@ class _SharingView extends StatelessWidget {
                               child: AnimatedSwitcher(
                                 duration: DcMotion.of(context, DcMotion.medium),
                                 layoutBuilder: (cur, prev) => Stack(
-                                    alignment: Alignment.centerLeft, children: [...prev, if (cur != null) cur]),
+                                    alignment: Alignment.centerLeft, children: [...prev, ?cur]),
                                 transitionBuilder: (child, a) {
                                   final incoming = child.key == ValueKey(c.pin);
                                   final curved = CurvedAnimation(parent: a, curve: DcMotion.enter);

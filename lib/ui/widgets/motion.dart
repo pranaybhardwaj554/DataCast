@@ -61,7 +61,7 @@ class FadeThroughSwitcher extends StatelessWidget {
       switchOutCurve: Curves.linear,
       layoutBuilder: (current, previous) => Stack(
         alignment: alignment,
-        children: [...previous, if (current != null) current],
+        children: [...previous, ?current],
       ),
       transitionBuilder: (c, a) => dcFadeThrough(c, a, dy: dy),
       child: child,
@@ -86,10 +86,17 @@ class Reveal extends StatelessWidget {
       switchOutCurve: Curves.linear,
       transitionBuilder: (c, a) {
         final curved = CurvedAnimation(parent: a, curve: DcMotion.enter, reverseCurve: DcMotion.exit);
-        return SizeTransition(
-          sizeFactor: curved,
-          axisAlignment: -1,
-          child: FadeTransition(opacity: curved, child: c),
+        // Grows downward from the top edge.
+        return ClipRect(
+          child: AnimatedBuilder(
+            animation: curved,
+            builder: (context, child) => Align(
+              alignment: Alignment.topCenter,
+              heightFactor: curved.value.clamp(0.0, 1.0),
+              child: child,
+            ),
+            child: FadeTransition(opacity: curved, child: c),
+          ),
         );
       },
       child: visible ? KeyedSubtree(key: const ValueKey(true), child: child) : const SizedBox(key: ValueKey(false), width: double.infinity),
