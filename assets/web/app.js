@@ -375,10 +375,10 @@
   function thumbUrl(p, size) {
     return state.info && state.info.thumbs ? '/api/thumb?path=' + q(p) + '&size=' + size : rawUrl(p);
   }
-  function thumbImg(p, size, fallback) {
+  function thumbImg(p, size, fallback, noRaw) {
     var img = el('img', { src: thumbUrl(p, size), alt: '', loading: 'lazy', decoding: 'async' });
     img.addEventListener('error', function () {
-      if (img.dataset.triedRaw !== '1' && state.info && state.info.thumbs) {
+      if (!noRaw && img.dataset.triedRaw !== '1' && state.info && state.info.thumbs) {
         img.dataset.triedRaw = '1';
         img.src = rawUrl(p); // e.g. 415 for a format the phone can't shrink
       } else if (img.parentNode) {
@@ -423,6 +423,11 @@
       var thumb = el('span', { class: 'tile-thumb' });
       var bigIcon = function () { return el('span', { class: 'ficon ' + iconKind(k) }, [icon(iconKind(k), 26)]); };
       if (k === 'img') thumb.appendChild(thumbImg(p, window.devicePixelRatio > 1.5 ? 512 : 256, bigIcon));
+      else if (k === 'vid' && state.info && state.info.thumbs) {
+        // Poster frame from the phone (Android 10+); icon if it can't make one.
+        thumb.appendChild(thumbImg(p, window.devicePixelRatio > 1.5 ? 512 : 256, bigIcon, true));
+        thumb.appendChild(el('span', { class: 'play-badge', 'aria-hidden': 'true' }, [icon('vid', 14)]));
+      }
       else thumb.appendChild(bigIcon());
       grid.appendChild(el('button', { type: 'button', class: 'tile', title: e.name, onclick: function () { activate(e, list); } }, [
         thumb, el('span', { class: 'tile-label', text: e.name })
