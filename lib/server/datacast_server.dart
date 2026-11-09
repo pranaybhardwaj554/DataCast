@@ -33,10 +33,19 @@ class DataCastServer {
     required this.assets,
     bool Function()? allowZip,
     String Function()? mode,
+    this.thumbWait = const Duration(seconds: 3),
+    this.thumbTimeout = const Duration(seconds: 8),
   }) : allowZip = allowZip ?? (() => false),
        mode = mode ?? (() => 'folder');
 
   final PinAuth auth;
+
+  /// How long a thumbnail request may queue for a decoder slot before it gets
+  /// a 503 (so a grid of thumbnails can't tie up the browser's connections).
+  final Duration thumbWait;
+
+  /// How long one native thumbnail may take before it counts as unsupported.
+  final Duration thumbTimeout;
 
   /// Current identity (read on every request so renames apply immediately).
   final DeviceIdentity Function() identity;
@@ -281,11 +290,16 @@ class DataCastServer {
     final cacheHeaders = {'etag': etag, 'cache-control': 'private, max-age=86400'};
     if (r.headers['if-none-match'] == etag) return Response.notModified(headers: cacheHeaders);
 
+    if (!await _thumbSlots.acquire(thumbWait)) {
+      return _json({'error': 'Busy making thumbnails'}, 503, {'retry-after': '2'});
+    }
     List<int>? bytes;
     try {
-      bytes = await _thumbSlots.run(() => src.thumbnail(path, size));
+      bytes = await src.thumbnail(path, size).timeout(thumbTimeout);
     } catch (_) {
-      bytes = null; // decoder failed on this file
+      bytes = null; // decoder failed or took too long on this file
+    } finally {
+      _thumbSlots.release();
     }
     if (bytes == null || bytes.isEmpty) {
       return _json({'error': 'No thumbnail for this file'}, 415);
@@ -429,18 +443,30 @@ class _Semaphore {
   int _running = 0;
   final _waiters = <Completer<void>>[];
 
-  Future<T> run<T>(Future<T> Function() task) async {
-    if (_running >= _max) {
-      final c = Completer<void>();
-      _waiters.add(c);
-      await c.future;
+  /// Takes a slot, waiting at most [timeout]. Returns false (and leaves the
+  /// queue) if no slot freed up in time. Call [release] after a true result.
+  Future<bool> acquire(Duration timeout) async {
+    if (_running < _max) {
+      _running++;
+      return true;
     }
-    _running++;
+    final c = Completer<void>();
+    _waiters.add(c);
     try {
-      return await task();
-    } finally {
+      await c.future.timeout(timeout);
+      return true;
+    } on TimeoutException {
+      // Still queued: give up. Already removed: release() handed us its slot.
+      return !_waiters.remove(c);
+    }
+  }
+
+  /// Frees a slot, handing it straight to the next waiter if there is one.
+  void release() {
+    if (_waiters.isNotEmpty) {
+      _waiters.removeAt(0).complete();
+    } else {
       _running--;
-      if (_waiters.isNotEmpty) _waiters.removeAt(0).complete();
     }
   }
 }

@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -237,6 +238,44 @@ void main() {
     await zipFile.delete();
   });
 
+  test('stuck thumbnails: queue gives up with 503, info stays fast', () async {
+    final slow = DataCastServer(
+      auth: auth,
+      identity: () => const DeviceIdentity(deviceId: 'dev-1', name: 'Pixel', platform: 'android'),
+      source: () => _NeverThumbSource(tmp),
+      peers: () => const [],
+      assets: (p) async => null,
+      thumbWait: const Duration(milliseconds: 300),
+      thumbTimeout: const Duration(seconds: 1),
+    );
+    final port = await slow.start(preferredPort: 0, address: InternetAddress.loopbackIPv4);
+    try {
+      final b = Uri.parse('http://127.0.0.1:$port');
+      final token = await login();
+      final authz = {'authorization': 'Bearer $token'};
+      final sw = Stopwatch()..start();
+      final calls = [
+        for (var i = 0; i < 4; i++)
+          http
+              .get(b.replace(path: '/api/thumb', queryParameters: {'path': '/Photos/a b ü.jpg', 'size': '128'}), headers: authz)
+              .then((r) => (r, sw.elapsedMilliseconds)),
+      ];
+      final info = await http.get(b.resolve('/api/info'));
+      expect(info.statusCode, 200);
+      expect(sw.elapsedMilliseconds, lessThan(250));
+      final results = await Future.wait(calls);
+      final busy = results.where((x) => x.$1.statusCode == 503).toList();
+      expect(busy, hasLength(1));
+      expect(busy.single.$1.headers['retry-after'], '2');
+      expect(busy.single.$2, lessThan(900));
+      final timedOut = results.where((x) => x.$1.statusCode == 415).toList();
+      expect(timedOut, hasLength(3));
+      expect(timedOut.every((x) => x.$2 >= 900), isTrue);
+    } finally {
+      await slow.stop();
+    }
+  });
+
   // Keep last: it initializes the test binding, which breaks real HTTP.
   test('selected files are served as a flat folder', () async {
     TestWidgetsFlutterBinding.ensureInitialized();
@@ -255,4 +294,11 @@ void main() {
     expect(String.fromCharCodes(await sel.read('/hello (2).txt').expand((x) => x).toList()), 'second');
     expect(() => sel.list('/sub'), throwsA(isA<FileNotFound>()));
   });
+}
+
+class _NeverThumbSource extends IoFileSource {
+  _NeverThumbSource(super.root) : super(displayName: 'Shared');
+
+  @override
+  Future<List<int>?> thumbnail(String path, int size) => Completer<List<int>?>().future;
 }
