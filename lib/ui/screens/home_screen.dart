@@ -69,6 +69,8 @@ class _IdleViewState extends State<_IdleView> {
     final ready = _mode == ShareMode.folder ? folderPicked : filesPicked;
     final Future<void> Function() pick = _mode == ShareMode.folder ? c.pickFolder : c.pickFiles;
 
+    if (!c.hasNetwork) return _NoWifiView(controller: c);
+
     return Scaffold(
       body: SafeArea(
         child: Padding(
@@ -103,6 +105,10 @@ class _IdleViewState extends State<_IdleView> {
                   Text('Wi-Fi  ·  Link  ·  PIN',
                       style: text.bodyMedium?.copyWith(fontWeight: FontWeight.w500)),
                   const SizedBox(height: 24),
+                  if (c.stopReason != null) ...[
+                    _StoppedCard(reason: c.stopReason!, onDismiss: c.clearStopReason),
+                    const SizedBox(height: 14),
+                  ],
                   _ModeSwitch(
                     mode: _mode,
                     onChanged: _busy ? null : (m) => setState(() => _mode = m),
@@ -176,7 +182,7 @@ class _IdleViewState extends State<_IdleView> {
                   ? const SizedBox(
                       width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
                   : Icon(ready ? Icons.wifi_tethering_rounded : Icons.add_rounded),
-              label: Text(ready ? 'Start sharing' : (_mode == ShareMode.folder ? 'Choose a folder' : 'Choose files')),
+              label: Text(ready ? (c.stopReason != null ? 'Start again' : 'Start sharing') : (_mode == ShareMode.folder ? 'Choose a folder' : 'Choose files')),
             ),
             const SizedBox(height: 10),
             Text('View & download only',
@@ -202,6 +208,135 @@ String formatBytes(int b) {
     i++;
   }
   return i == 0 ? '$b B' : '${v.toStringAsFixed(v < 10 ? 1 : 0)} ${units[i]}';
+}
+
+/// Full-screen state when the phone has no Wi-Fi or hotspot address.
+class _NoWifiView extends StatelessWidget {
+  const _NoWifiView({required this.controller});
+  final SharingController controller;
+
+  @override
+  Widget build(BuildContext context) {
+    final t = DcTheme.of(context);
+    final text = Theme.of(context).textTheme;
+    return Scaffold(
+      body: SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(20, 12, 20, 20),
+          child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+            Row(children: [
+              const BrandMark(),
+              const SizedBox(width: 10),
+              Text('DataCast',
+                  style: TextStyle(
+                      fontFamily: AppTheme.display, fontWeight: FontWeight.w700, fontSize: 22, letterSpacing: -0.4, color: t.ink)),
+            ]),
+            Expanded(
+              child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
+                Container(
+                  width: 88,
+                  height: 88,
+                  decoration: BoxDecoration(
+                    color: t.surface,
+                    borderRadius: BorderRadius.circular(28),
+                    border: Border.all(color: t.line),
+                  ),
+                  child: Icon(Icons.wifi_off_rounded, size: 40, color: t.ink2),
+                ),
+                const SizedBox(height: 16),
+                Text('No Wi-Fi', style: text.headlineMedium?.copyWith(fontSize: 30)),
+                const SizedBox(height: 6),
+                Text('Wi-Fi or hotspot needed', style: text.bodyMedium?.copyWith(fontWeight: FontWeight.w500)),
+                if (controller.stopReason == StopReason.wifiLost) ...[
+                  const SizedBox(height: 18),
+                  const NoticeBanner(text: 'Sharing stopped when Wi-Fi was lost', icon: Icons.stop_circle_outlined),
+                ],
+              ]),
+            ),
+            FilledButton.icon(
+              onPressed: controller.openWifiSettings,
+              icon: const Icon(Icons.wifi_rounded),
+              label: const Text('Open Wi-Fi settings'),
+            ),
+            const SizedBox(height: 10),
+            const FilledButton(
+              onPressed: null,
+              style: ButtonStyle(minimumSize: WidgetStatePropertyAll(Size.fromHeight(52))),
+              child: Text('Start sharing'),
+            ),
+          ]),
+        ),
+      ),
+    );
+  }
+}
+
+/// Shown on Home after sharing ended without the user tapping Stop.
+class _StoppedCard extends StatelessWidget {
+  const _StoppedCard({required this.reason, required this.onDismiss});
+  final StopReason reason;
+  final VoidCallback onDismiss;
+
+  @override
+  Widget build(BuildContext context) {
+    final t = DcTheme.of(context);
+    final (IconData icon, String why) = switch (reason) {
+      StopReason.wifiLost => (Icons.wifi_off_rounded, 'Wi-Fi lost'),
+      StopReason.accessLost => (Icons.folder_off_outlined, 'Lost access to files · pick again'),
+      StopReason.system => (Icons.phonelink_erase_rounded, 'Stopped by the phone'),
+    };
+    return Semantics(
+      liveRegion: true,
+      child: Container(
+        padding: const EdgeInsets.fromLTRB(14, 12, 4, 12),
+        decoration: BoxDecoration(color: t.warnSoft, borderRadius: BorderRadius.circular(16)),
+        child: Row(children: [
+          Container(
+            width: 40,
+            height: 40,
+            decoration: BoxDecoration(color: t.surface, borderRadius: BorderRadius.circular(12)),
+            child: Icon(icon, size: 20, color: t.warnInk),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Text('Sharing stopped', style: TextStyle(fontWeight: FontWeight.w600, fontSize: 16, color: t.warnInk)),
+              Text(why, style: TextStyle(fontSize: 13, color: t.warnInk)),
+            ]),
+          ),
+          IconButton(
+            tooltip: 'Dismiss',
+            icon: Icon(Icons.close_rounded, color: t.warnInk, size: 20),
+            onPressed: onDismiss,
+          ),
+        ]),
+      ),
+    );
+  }
+}
+
+/// Shown on the sharing screen when the phone moved networks and the link changed.
+class _LinkChangedNotice extends StatelessWidget {
+  const _LinkChangedNotice({required this.onAck});
+  final VoidCallback onAck;
+
+  @override
+  Widget build(BuildContext context) {
+    final t = DcTheme.of(context);
+    return Container(
+      padding: const EdgeInsets.fromLTRB(14, 6, 6, 6),
+      decoration: BoxDecoration(color: t.warnSoft, borderRadius: BorderRadius.circular(12)),
+      child: Row(children: [
+        Icon(Icons.sync_alt_rounded, size: 18, color: t.warnInk),
+        const SizedBox(width: 10),
+        Expanded(
+          child: Text('New link · share the QR again',
+              style: TextStyle(color: t.warnInk, fontSize: 13, fontWeight: FontWeight.w600)),
+        ),
+        TextButton(onPressed: onAck, child: Text('Got it', style: TextStyle(color: t.warnInk))),
+      ]),
+    );
+  }
 }
 
 /// Folder | Files segmented switch.
@@ -439,6 +574,10 @@ class _SharingView extends StatelessWidget {
                         ),
                       ]),
                     ),
+                    if (c.urlChanged) ...[
+                      const SizedBox(height: 14),
+                      _LinkChangedNotice(onAck: c.acknowledgeUrlChange),
+                    ],
                     if (_isIos) ...[
                       const SizedBox(height: 14),
                       const NoticeBanner(

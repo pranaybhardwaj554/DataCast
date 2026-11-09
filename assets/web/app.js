@@ -152,9 +152,67 @@
     closePreview(true);
     show('view-message');
   }
-  function offline() {
-    message('This device stopped sharing', 'DataCast on the phone was closed, sharing was stopped, or you left the Wi-Fi. Ask them to start sharing again, then retry.');
+  // ---------- connection watch ----------
+  // Polls /api/info. When the phone goes away we show a "Reconnecting" bar
+  // and keep the page as it is; if it comes back we carry on in place. After
+  // GIVE_UP_MS without it we switch to the "Sharing stopped" page, and still
+  // reload automatically if the phone reappears.
+  var BEAT_MS = 5000, LOST_BEAT_MS = 2000, GIVE_UP_MS = 30000, PING_TIMEOUT_MS = 4000;
+  var conn = { lostAt: 0, stopped: false, timer: null, deviceId: null };
+
+  function ping() {
+    var ctl = window.AbortController ? new AbortController() : null;
+    var t = setTimeout(function () { if (ctl) ctl.abort(); }, PING_TIMEOUT_MS);
+    return fetch('/api/info', { cache: 'no-store', credentials: 'same-origin', signal: ctl ? ctl.signal : undefined })
+      .then(function (r) { clearTimeout(t); if (!r.ok) throw new Error('status ' + r.status); return r.json(); },
+            function (e) { clearTimeout(t); throw e; });
   }
+  function scheduleBeat() {
+    clearTimeout(conn.timer);
+    conn.timer = setTimeout(beat, conn.lostAt ? LOST_BEAT_MS : BEAT_MS);
+  }
+  function beat() {
+    if (document.hidden) { scheduleBeat(); return; }
+    ping().then(function (info) {
+      // Same address now answered by a different phone: start over.
+      if (conn.deviceId && info.deviceId && info.deviceId !== conn.deviceId) { location.reload(); return; }
+      if (info.deviceId) conn.deviceId = info.deviceId;
+      if (conn.stopped) { location.reload(); return; }
+      if (conn.lostAt) {
+        conn.lostAt = 0;
+        setLost(false);
+        toast('Back online');
+        if ($('preview').hidden && !$('view-files').hidden) openFiles(state.path);
+      }
+    }, markLost).then(scheduleBeat);
+  }
+  function setLost(on) {
+    $('conn-bar').hidden = !on;
+    var st = $('brand-status');
+    st.classList.toggle('warn', on);
+    $('brand-status-text').textContent = on ? 'Reconnecting…' : 'Connected';
+  }
+  function markLost() {
+    if (conn.stopped) return;
+    if (!conn.lostAt) { conn.lostAt = Date.now(); setLost(true); }
+    var left = GIVE_UP_MS - (Date.now() - conn.lostAt);
+    if (left <= 0) { showStopped(); return; }
+    $('conn-detail').textContent = 'Retrying · ' + Math.ceil(left / 1000) + 's';
+  }
+  function showStopped() {
+    conn.stopped = true;
+    setLost(false);
+    message('Sharing stopped', 'The phone left the Wi-Fi, was locked, or stopped sharing. This page reloads when it is back.', function () {
+      ping().then(function () { location.reload(); }, function () { toast("Still can't reach the phone"); });
+    });
+  }
+  // A request failed outright (network error): treat it as the phone going away.
+  function offline() {
+    if (!conn.deviceId) { showStopped(); scheduleBeat(); return; } // never reached it at all
+    markLost();
+    scheduleBeat();
+  }
+  document.addEventListener('visibilitychange', function () { if (!document.hidden) beat(); });
 
   // ---------- devices ----------
   function renderDevices(list) {
@@ -473,6 +531,8 @@
   window.addEventListener('hashchange', route);
   api('/api/info').then(function (r) {
     state.info = r.ok ? r.data : null;
+    if (state.info && state.info.deviceId) conn.deviceId = state.info.deviceId;
+    scheduleBeat();
     if (state.info && state.info.name) $('brand-name').textContent = state.info.name;
     route();
   }).catch(offline);

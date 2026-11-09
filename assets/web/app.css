@@ -195,5 +195,17 @@ table.files { width: 100%; min-width: 520px; border-collapse: collapse; font-siz
   .search { max-width: none; order: 3; flex-basis: 100%; }
 }
 
+/* Connection lost bar */
+.conn-bar { background: #FFF6E5; color: #7A4B00; border-bottom: 1px solid #F3E2BF; font-size: 14px; }
+.conn-inner { display: flex; align-items: center; gap: 10px; min-height: 42px; flex-wrap: wrap; }
+.conn-inner svg { animation: spin 1.6s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .conn-inner svg { animation: none; } }
+@media (prefers-color-scheme: dark) { .conn-bar { background: #332A14; color: #F5C46B; border-color: #4A3B1A; } }
+.brand-status.warn { color: #7A4B00; }
+.brand-status.warn .dot { background: #D98E04; }
+@media (prefers-color-scheme: dark) { .brand-status.warn { color: #F5C46B; } }
+.msg-card { text-align: center; }
+
 /* Toast */
 .toast { position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%); background: var(--ink); color: var(--paper); padding: 10px 16px; border-radius: 10px; font-size: 14px; z-index: 30; max-width: calc(100% - 32px); }
