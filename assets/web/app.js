@@ -1,0 +1,479 @@
+/* DataCast web UI: device list, PIN, file browser and preview.
+ * Plain JS, no build step. Talks to the phone's own HTTP server:
+ *   GET  /api/info                -> {name, deviceId, platform, requiresPin, allowZip?}
+ *   GET  /api/devices             -> [{name, deviceId, ip, port, platform, self?}]
+ *   POST /api/auth {pin}          -> {token} (+ HttpOnly cookie dc_token)
+ *                                   401 {error, attemptsLeft} | 429 {error, retryAfterSec}
+ *   GET  /api/files?path=/x       -> {path, entries:[{name, path, isDir, size, modified, mime}]}
+ *   GET  /api/download?path=      (attachment)
+ *   GET  /api/raw?path=           (inline, Range)
+ *   GET  /api/zip?path=           (folder as zip, when allowZip)
+ */
+(function () {
+  'use strict';
+
+  var TOKEN_KEY = 'dc_token';
+  var VIEW_KEY = 'dc_view';
+  var state = {
+    info: null,
+    path: '/',
+    entries: [],
+    query: '',
+    layout: safeGet(VIEW_KEY) || 'list',
+    previewList: [],
+    previewIndex: -1,
+    devicesTimer: null,
+    lockedUntil: 0
+  };
+
+  var $ = function (id) { return document.getElementById(id); };
+
+  // ---------- storage (may be unavailable in private modes) ----------
+  function safeGet(k) { try { return sessionStorage.getItem(k) || localStorage.getItem(k); } catch (e) { return null; } }
+  function safeSet(k, v) { try { if (k === TOKEN_KEY) sessionStorage.setItem(k, v); else localStorage.setItem(k, v); } catch (e) {} }
+  function safeDel(k) { try { sessionStorage.removeItem(k); } catch (e) {} }
+
+  // ---------- API ----------
+  function api(url, opts) {
+    opts = opts || {};
+    var headers = opts.headers || {};
+    var token = safeGet(TOKEN_KEY);
+    if (token) headers['Authorization'] = 'Bearer ' + token;
+    if (opts.json !== undefined) {
+      headers['Content-Type'] = 'application/json';
+      opts.body = JSON.stringify(opts.json);
+    }
+    return fetch(url, { method: opts.method || 'GET', headers: headers, body: opts.body, credentials: 'same-origin', cache: 'no-store' })
+      .then(function (res) {
+        return res.text().then(function (text) {
+          var data = null;
+          try { data = text ? JSON.parse(text) : null; } catch (e) { data = { raw: text }; }
+          return { ok: res.ok, status: res.status, data: data || {} };
+        });
+      });
+  }
+  function q(path) { return encodeURIComponent(path); }
+  function rawUrl(p) { return '/api/raw?path=' + q(p); }
+  function downloadUrl(p) { return '/api/download?path=' + q(p); }
+
+  // ---------- helpers ----------
+  function el(tag, attrs, children) {
+    var n = document.createElement(tag);
+    if (attrs) Object.keys(attrs).forEach(function (k) {
+      var v = attrs[k];
+      if (v == null || v === false) return;
+      if (k === 'class') n.className = v;
+      else if (k === 'text') n.textContent = v;
+      else if (k.indexOf('on') === 0) n.addEventListener(k.slice(2), v);
+      else n.setAttribute(k, v === true ? '' : v);
+    });
+    (children || []).forEach(function (c) { if (c != null) n.appendChild(typeof c === 'string' ? document.createTextNode(c) : c); });
+    return n;
+  }
+  // Static, trusted icon markup only.
+  var ICONS = {
+    dir: '<path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>',
+    img: '<rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="9" cy="10" r="1.6"/><path d="m21 16-5-5-9 9"/>',
+    vid: '<rect x="3" y="5" width="13" height="14" rx="2"/><path d="m16 10 5-3v10l-5-3z"/>',
+    aud: '<path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/>',
+    doc: '<path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/>',
+    download: '<path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 21h14"/>',
+    phone: '<rect x="6" y="2.5" width="12" height="19" rx="2.5"/><path d="M11 18.5h2"/>',
+    tablet: '<rect x="4" y="2.5" width="16" height="19" rx="2.5"/><path d="M11 18.5h2"/>',
+    lock: '<rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/>'
+  };
+  function icon(name, size) {
+    var s = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    s.setAttribute('width', size || 18); s.setAttribute('height', size || 18);
+    s.setAttribute('viewBox', '0 0 24 24'); s.setAttribute('fill', 'none');
+    s.setAttribute('stroke', 'currentColor'); s.setAttribute('stroke-width', '1.8');
+    s.setAttribute('stroke-linecap', 'round'); s.setAttribute('stroke-linejoin', 'round');
+    s.setAttribute('aria-hidden', 'true');
+    s.innerHTML = ICONS[name];
+    return s;
+  }
+  function fmtSize(b) {
+    if (b == null || b < 0) return '—';
+    var u = ['B', 'KB', 'MB', 'GB', 'TB'], i = 0;
+    while (b >= 1024 && i < u.length - 1) { b /= 1024; i++; }
+    return (i === 0 ? b : b.toFixed(b < 10 ? 1 : 0)) + ' ' + u[i];
+  }
+  function fmtDate(v) {
+    if (!v) return '—';
+    var d = new Date(typeof v === 'number' && v < 1e12 ? v * 1000 : v);
+    if (isNaN(d)) return '—';
+    var now = new Date();
+    var opts = { month: 'short', day: 'numeric' };
+    if (d.getFullYear() !== now.getFullYear()) opts.year = 'numeric';
+    else { opts.hour = '2-digit'; opts.minute = '2-digit'; }
+    return d.toLocaleString(undefined, opts);
+  }
+  var EXT = {
+    img: ['jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp', 'svg', 'heic', 'avif'],
+    vid: ['mp4', 'webm', 'mov', 'm4v', 'mkv', '3gp'],
+    aud: ['mp3', 'm4a', 'aac', 'wav', 'ogg', 'flac', 'opus'],
+    pdf: ['pdf'],
+    txt: ['txt', 'md', 'csv', 'json', 'log', 'xml', 'yaml', 'yml', 'js', 'css', 'html', 'dart', 'py', 'srt']
+  };
+  function kindOf(e) {
+    if (e.isDir) return 'dir';
+    var m = e.mime || '';
+    var ext = (e.name.split('.').pop() || '').toLowerCase();
+    if (m.indexOf('image/') === 0 || EXT.img.indexOf(ext) >= 0) return 'img';
+    if (m.indexOf('video/') === 0 || EXT.vid.indexOf(ext) >= 0) return 'vid';
+    if (m.indexOf('audio/') === 0 || EXT.aud.indexOf(ext) >= 0) return 'aud';
+    if (m === 'application/pdf' || ext === 'pdf') return 'pdf';
+    if (m.indexOf('text/') === 0 || EXT.txt.indexOf(ext) >= 0) return 'txt';
+    return 'other';
+  }
+  function iconKind(k) { return k === 'pdf' || k === 'txt' || k === 'other' ? 'doc' : k; }
+  function joinPath(dir, name) { return (dir === '/' ? '' : dir) + '/' + name; }
+  function entryPath(e) { return e.path || joinPath(state.path, e.name); }
+
+  var toastTimer;
+  function toast(msg) {
+    var t = $('toast'); t.textContent = msg; t.hidden = false;
+    clearTimeout(toastTimer); toastTimer = setTimeout(function () { t.hidden = true; }, 3200);
+  }
+
+  // ---------- views ----------
+  var VIEWS = ['view-devices', 'view-pin', 'view-files', 'view-message'];
+  function show(id) {
+    VIEWS.forEach(function (v) { $(v).hidden = v !== id; });
+    if (id !== 'view-devices' && state.devicesTimer) { clearInterval(state.devicesTimer); state.devicesTimer = null; }
+    $('switch-device').hidden = id !== 'view-files';
+    $('brand-status').hidden = id !== 'view-files';
+    window.scrollTo(0, 0);
+  }
+  function message(title, body, retry) {
+    $('msg-title').textContent = title;
+    $('msg-body').textContent = body;
+    $('msg-retry').onclick = retry || function () { location.reload(); };
+    closePreview(true);
+    show('view-message');
+  }
+  function offline() {
+    message('This device stopped sharing', 'DataCast on the phone was closed, sharing was stopped, or you left the Wi-Fi. Ask them to start sharing again, then retry.');
+  }
+
+  // ---------- devices ----------
+  function renderDevices(list) {
+    var grid = $('device-grid');
+    grid.textContent = '';
+    if (!list.length) {
+      $('devices-count').textContent = 'No devices found yet';
+      return;
+    }
+    $('devices-count').textContent = list.length + (list.length === 1 ? ' device' : ' devices') + ' found · looking for more';
+    list.sort(function (a, b) { return (b.self ? 1 : 0) - (a.self ? 1 : 0) || String(a.name).localeCompare(b.name); });
+    list.forEach(function (d) {
+      var isTablet = /ipad|tablet/i.test(d.platform || '') || /ipad/i.test(d.name || '');
+      var card = el('button', { type: 'button', class: 'device' + (d.self ? ' self' : ''), onclick: function () { pickDevice(d); } }, [
+        el('div', { class: 'device-top' }, [
+          el('span', { class: 'device-icon' }, [icon(isTablet ? 'tablet' : 'phone', 22)]),
+          el('span', { class: 'stack-6', style: 'gap:2px;min-width:0' }, [
+            el('span', { class: 'device-name', text: d.name || 'DataCast device' }),
+            el('span', { class: 'device-sub', text: [d.platform, d.ip].filter(Boolean).join(' · ') })
+          ])
+        ]),
+        el('div', { class: 'device-foot' }, [
+          el('span', { class: 'device-lock' }, [icon('lock', 14), 'PIN required']),
+          el('span', { class: 'tag', text: d.self ? 'This one' : 'Open' })
+        ])
+      ]);
+      grid.appendChild(card);
+    });
+  }
+  function loadDevices(first) {
+    if (first) {
+      var grid = $('device-grid'); grid.textContent = '';
+      for (var i = 0; i < 3; i++) grid.appendChild(el('div', { class: 'skeleton', 'aria-hidden': 'true' }));
+    }
+    return api('/api/devices').then(function (r) {
+      if (!r.ok) throw new Error('devices');
+      renderDevices(Array.isArray(r.data) ? r.data : (r.data.devices || []));
+    }).catch(function () {
+      if (first) offline();
+    });
+  }
+  function pickDevice(d) {
+    if (d.self) { location.hash = '#/pin'; return; }
+    var host = String(d.ip).indexOf(':') >= 0 ? '[' + d.ip + ']' : d.ip;
+    location.href = 'http://' + host + ':' + (d.port || 8080) + '/#/pin';
+  }
+  function openDevices() {
+    show('view-devices');
+    loadDevices(true);
+    state.devicesTimer = setInterval(function () { loadDevices(false); }, 5000);
+  }
+
+  // ---------- PIN ----------
+  var pinInputs = Array.prototype.slice.call(document.querySelectorAll('.pin-inputs input'));
+  function pinValue() { return pinInputs.map(function (i) { return i.value; }).join(''); }
+  function clearPin() { pinInputs.forEach(function (i) { i.value = ''; }); pinInputs[0].focus(); }
+  function setPinError(msg) {
+    var e = $('pin-error'), box = document.querySelector('.pin-inputs');
+    e.textContent = msg || ''; e.hidden = !msg;
+    box.classList.toggle('bad', !!msg);
+    if (msg) { box.classList.remove('shake'); void box.offsetWidth; box.classList.add('shake'); }
+  }
+  pinInputs.forEach(function (input, i) {
+    input.addEventListener('input', function () {
+      var digits = input.value.replace(/\D/g, '');
+      if (digits.length > 1) { // paste or autofill into one box
+        digits.split('').slice(0, 4 - i).forEach(function (c, j) { pinInputs[i + j].value = c; });
+      } else input.value = digits;
+      setPinError('');
+      var next = pinInputs[Math.min(i + digits.length, 3)];
+      if (digits && next) next.focus();
+      if (pinValue().length === 4) submitPin();
+    });
+    input.addEventListener('keydown', function (ev) {
+      if (ev.key === 'Backspace' && !input.value && i > 0) { pinInputs[i - 1].focus(); pinInputs[i - 1].value = ''; }
+      if (ev.key === 'ArrowLeft' && i > 0) pinInputs[i - 1].focus();
+      if (ev.key === 'ArrowRight' && i < 3) pinInputs[i + 1].focus();
+    });
+    input.addEventListener('focus', function () { input.select(); });
+  });
+  var submitting = false;
+  function submitPin(ev) {
+    if (ev) ev.preventDefault();
+    var pin = pinValue();
+    if (submitting) return;
+    if (Date.now() < state.lockedUntil) return;
+    if (pin.length !== 4) { setPinError('Enter all 4 digits.'); return; }
+    submitting = true; $('pin-submit').disabled = true;
+    api('/api/auth', { method: 'POST', json: { pin: pin } }).then(function (r) {
+      if (r.ok) {
+        if (r.data.token) safeSet(TOKEN_KEY, r.data.token);
+        location.hash = '#/files/';
+        return;
+      }
+      if (r.status === 429) {
+        var sec = r.data.retryAfterSec || 60;
+        lockPin(sec);
+      } else if (r.status === 401) {
+        var left = r.data.attemptsLeft;
+        setPinError("That PIN didn't match." + (left != null ? ' ' + left + (left === 1 ? ' try' : ' tries') + ' left.' : ''));
+        clearPin();
+      } else setPinError(r.data.error || 'Could not check the PIN. Try again.');
+    }).catch(offline).then(function () { submitting = false; if (Date.now() >= state.lockedUntil) $('pin-submit').disabled = false; });
+  }
+  function lockPin(sec) {
+    state.lockedUntil = Date.now() + sec * 1000;
+    pinInputs.forEach(function (i) { i.disabled = true; });
+    $('pin-submit').disabled = true;
+    (function tick() {
+      var s = Math.ceil((state.lockedUntil - Date.now()) / 1000);
+      if (s <= 0) {
+        pinInputs.forEach(function (i) { i.disabled = false; });
+        $('pin-submit').disabled = false; setPinError(''); clearPin(); return;
+      }
+      setPinError('Too many wrong tries. Try again in ' + s + 's.');
+      document.querySelector('.pin-inputs').classList.remove('shake');
+      setTimeout(tick, 1000);
+    })();
+  }
+  $('pin-form').addEventListener('submit', submitPin);
+  function openPin() {
+    show('view-pin');
+    $('pin-device-name').textContent = (state.info && state.info.name) || 'This device';
+    setPinError('');
+    clearPin();
+  }
+
+  // ---------- files ----------
+  function renderCrumbs(path) {
+    var nav = $('crumbs'); nav.textContent = '';
+    var parts = path.split('/').filter(Boolean);
+    var rootName = (state.info && state.info.folderName) || 'Shared folder';
+    var acc = '';
+    var items = [{ name: rootName, path: '/' }].concat(parts.map(function (p) { acc += '/' + p; return { name: p, path: acc }; }));
+    items.forEach(function (it, i) {
+      if (i) nav.appendChild(el('span', { class: 'sep', 'aria-hidden': 'true', text: '/' }));
+      if (i === items.length - 1) nav.appendChild(el('span', { class: 'here', 'aria-current': 'page', text: it.name }));
+      else nav.appendChild(el('a', { href: '#/files' + encodePath(it.path), text: it.name }));
+    });
+    $('folder-title').textContent = items[items.length - 1].name;
+    document.title = items[items.length - 1].name + ' · DataCast';
+  }
+  function encodePath(p) { return p.split('/').map(encodeURIComponent).join('/'); }
+  function visibleEntries() {
+    var qy = state.query.trim().toLowerCase();
+    var list = state.entries.slice().sort(function (a, b) {
+      return (b.isDir ? 1 : 0) - (a.isDir ? 1 : 0) || a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' });
+    });
+    return qy ? list.filter(function (e) { return e.name.toLowerCase().indexOf(qy) >= 0; }) : list;
+  }
+  function activate(e, list) {
+    if (e.isDir) { location.hash = '#/files' + encodePath(entryPath(e)); return; }
+    var k = kindOf(e);
+    if (k === 'other') { window.location.href = downloadUrl(entryPath(e)); return; }
+    openPreview(e, list);
+  }
+  function renderFiles() {
+    var list = visibleEntries();
+    var rows = $('file-rows'), grid = $('grid-box');
+    rows.textContent = ''; grid.textContent = '';
+    list.forEach(function (e) {
+      var k = kindOf(e), p = entryPath(e);
+      var nameBtn = el('button', { type: 'button', class: 'fname', onclick: function () { activate(e, list); } }, [
+        el('span', { class: 'ficon ' + iconKind(k) }, [icon(iconKind(k))]),
+        el('span', { text: e.name })
+      ]);
+      var dl = e.isDir
+        ? (state.info && state.info.allowZip ? el('a', { class: 'icon-btn', href: '/api/zip?path=' + q(p), 'aria-label': 'Download ' + e.name + ' as zip' }, [icon('download', 16)]) : null)
+        : el('a', { class: 'icon-btn', href: downloadUrl(p), download: e.name, 'aria-label': 'Download ' + e.name }, [icon('download', 16)]);
+      rows.appendChild(el('tr', null, [
+        el('td', null, [nameBtn]),
+        el('td', { text: e.isDir ? '—' : fmtSize(e.size) }),
+        el('td', { text: fmtDate(e.modified) }),
+        el('td', null, [dl])
+      ]));
+      var thumb = el('span', { class: 'tile-thumb' });
+      if (k === 'img') thumb.appendChild(el('img', { src: rawUrl(p), alt: '', loading: 'lazy', decoding: 'async' }));
+      else thumb.appendChild(el('span', { class: 'ficon ' + iconKind(k) }, [icon(iconKind(k), 26)]));
+      grid.appendChild(el('button', { type: 'button', class: 'tile', title: e.name, onclick: function () { activate(e, list); } }, [
+        thumb, el('span', { class: 'tile-label', text: e.name })
+      ]));
+    });
+    var isGrid = state.layout === 'grid';
+    $('list-box').hidden = isGrid || !list.length;
+    grid.hidden = !isGrid || !list.length;
+    $('empty').hidden = !!list.length;
+    $('empty').textContent = state.query ? 'Nothing here matches “' + state.query + '”.' : 'This folder is empty.';
+    $('view-list').setAttribute('aria-pressed', String(!isGrid));
+    $('view-grid').setAttribute('aria-pressed', String(isGrid));
+    var dirs = state.entries.filter(function (e) { return e.isDir; }).length;
+    var files = state.entries.length - dirs;
+    var bytes = state.entries.reduce(function (s, e) { return s + (e.isDir ? 0 : (e.size || 0)); }, 0);
+    $('folder-summary').textContent = dirs + (dirs === 1 ? ' folder' : ' folders') + ' · ' + files + (files === 1 ? ' file' : ' files') + (files ? ' · ' + fmtSize(bytes) : '');
+  }
+  function openFiles(path) {
+    path = '/' + path.split('/').filter(Boolean).join('/');
+    return api('/api/files?path=' + q(path)).then(function (r) {
+      if (r.status === 401) { safeDel(TOKEN_KEY); location.hash = '#/pin'; return; }
+      if (r.status === 404) { toast('That folder no longer exists.'); location.hash = '#/files/'; return; }
+      if (!r.ok) { message('Could not open this folder', r.data.error || 'The device returned an error.', function () { route(); }); return; }
+      state.path = r.data.path || path;
+      state.entries = r.data.entries || [];
+      show('view-files');
+      $('brand-name').textContent = (state.info && state.info.name) || 'DataCast';
+      var zip = $('zip-btn');
+      zip.hidden = !(state.info && state.info.allowZip && state.entries.length);
+      zip.href = '/api/zip?path=' + q(state.path);
+      renderCrumbs(state.path);
+      renderFiles();
+    }).catch(offline);
+  }
+  $('search').addEventListener('input', function (ev) { state.query = ev.target.value; renderFiles(); });
+  $('view-list').addEventListener('click', function () { state.layout = 'list'; safeSet(VIEW_KEY, 'list'); renderFiles(); });
+  $('view-grid').addEventListener('click', function () { state.layout = 'grid'; safeSet(VIEW_KEY, 'grid'); renderFiles(); });
+
+  // ---------- preview ----------
+  var lastFocus = null;
+  function openPreview(e, list) {
+    state.previewList = list.filter(function (x) { return !x.isDir && kindOf(x) !== 'other'; });
+    state.previewIndex = state.previewList.indexOf(e);
+    lastFocus = document.activeElement;
+    $('preview').hidden = false;
+    document.body.style.overflow = 'hidden';
+    renderPreview();
+    $('pv-close').focus();
+  }
+  function renderPreview() {
+    var e = state.previewList[state.previewIndex];
+    if (!e) return closePreview();
+    var p = entryPath(e), k = kindOf(e), box = $('pv-content');
+    box.textContent = '';
+    $('pv-name').textContent = e.name;
+    $('pv-sub').textContent = fmtSize(e.size) + ' · ' + (state.previewIndex + 1) + ' of ' + state.previewList.length;
+    $('pv-download').href = downloadUrl(p);
+    $('pv-download').setAttribute('download', e.name);
+    $('pv-prev').disabled = state.previewIndex <= 0;
+    $('pv-next').disabled = state.previewIndex >= state.previewList.length - 1;
+    if (k === 'img') {
+      var img = el('img', { src: rawUrl(p), alt: e.name });
+      img.addEventListener('error', function () { unsupported(box, e); });
+      box.appendChild(img);
+    } else if (k === 'vid') {
+      var v = el('video', { src: rawUrl(p), controls: true, autoplay: true, playsinline: true, preload: 'metadata' });
+      v.addEventListener('error', function () { unsupported(box, e); });
+      box.appendChild(v);
+    } else if (k === 'aud') {
+      box.appendChild(el('audio', { src: rawUrl(p), controls: true, autoplay: true }));
+    } else if (k === 'pdf') {
+      box.appendChild(el('iframe', { src: rawUrl(p), title: e.name }));
+    } else if (k === 'txt') {
+      if ((e.size || 0) > 2 * 1024 * 1024) { unsupported(box, e, 'This file is too large to preview.'); return; }
+      var pre = el('pre', { text: 'Loading…' });
+      box.appendChild(pre);
+      fetch(rawUrl(p), { credentials: 'same-origin' }).then(function (r) { return r.text(); })
+        .then(function (t) { pre.textContent = t; }).catch(function () { unsupported(box, e); });
+    }
+  }
+  function unsupported(box, e, msg) {
+    box.textContent = '';
+    box.appendChild(el('div', { class: 'pv-none' }, [
+      el('p', { text: msg || "This browser can't preview this file." }),
+      el('a', { class: 'btn btn-primary', href: downloadUrl(entryPath(e)), download: e.name }, [icon('download', 16), 'Download instead'])
+    ]));
+  }
+  function closePreview(silent) {
+    if ($('preview').hidden) return;
+    $('preview').hidden = true;
+    $('pv-content').textContent = ''; // stops media
+    document.body.style.overflow = '';
+    if (!silent && lastFocus) lastFocus.focus();
+  }
+  function step(d) {
+    var n = state.previewIndex + d;
+    if (n < 0 || n >= state.previewList.length) return;
+    state.previewIndex = n; renderPreview();
+  }
+  $('pv-close').addEventListener('click', function () { closePreview(); });
+  $('pv-prev').addEventListener('click', function () { step(-1); });
+  $('pv-next').addEventListener('click', function () { step(1); });
+  document.addEventListener('keydown', function (ev) {
+    if ($('preview').hidden) return;
+    if (ev.key === 'Escape') closePreview();
+    else if (ev.key === 'ArrowLeft') step(-1);
+    else if (ev.key === 'ArrowRight') step(1);
+  });
+  // swipe on touch screens
+  (function () {
+    var x0 = null;
+    var stage = document.querySelector('.pv-stage');
+    stage.addEventListener('touchstart', function (e) { x0 = e.touches[0].clientX; }, { passive: true });
+    stage.addEventListener('touchend', function (e) {
+      if (x0 == null) return;
+      var dx = e.changedTouches[0].clientX - x0; x0 = null;
+      if (Math.abs(dx) > 60) step(dx < 0 ? 1 : -1);
+    });
+  })();
+  $('devices-refresh').addEventListener('click', function () { loadDevices(true); });
+
+  // ---------- routing ----------
+  function route() {
+    closePreview(true);
+    var h = decodeURIComponent(location.hash.replace(/^#/, '')) || '/';
+    if (h.indexOf('/files') === 0) return openFiles(h.slice(6) || '/');
+    if (h === '/pin') {
+      if (state.info && state.info.requiresPin === false) { location.hash = '#/files/'; return; }
+      return openPin();
+    }
+    if (h === '/devices') return openDevices();
+    // Landing: straight to files if this browser is already unlocked.
+    return api('/api/files?path=%2F').then(function (r) {
+      if (r.ok) location.hash = '#/files/';
+      else openDevices();
+    }).catch(offline);
+  }
+
+  window.addEventListener('hashchange', route);
+  api('/api/info').then(function (r) {
+    state.info = r.ok ? r.data : null;
+    if (state.info && state.info.name) $('brand-name').textContent = state.info.name;
+    route();
+  }).catch(offline);
+})();
