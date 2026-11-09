@@ -53,6 +53,25 @@
       });
   }
   function q(path) { return encodeURIComponent(path); }
+
+  // Automatic redirects replace the current history entry, so Back never
+  // bounces into a page the app sent you to. Only user clicks push history.
+  function redirect(hash) { location.replace(hash); }
+
+  // Ends this browser's session on the phone so its "connected" count drops
+  // straight away. Fire and forget; the cookie goes with the beacon, the
+  // Bearer token with the keepalive fetch.
+  function signOut() {
+    var token = safeGet(TOKEN_KEY);
+    safeDel(TOKEN_KEY);
+    try {
+      if (token && window.fetch) {
+        fetch('/api/logout', { method: 'POST', keepalive: true, credentials: 'same-origin', headers: { Authorization: 'Bearer ' + token } }).catch(function () {});
+      } else if (navigator.sendBeacon) {
+        navigator.sendBeacon('/api/logout');
+      }
+    } catch (e) {}
+  }
   function rawUrl(p) { return '/api/raw?path=' + q(p); }
   function downloadUrl(p) { return '/api/download?path=' + q(p); }
 
@@ -283,6 +302,7 @@
   function pickDevice(d) {
     if (d.self) { location.hash = '#/pin'; return; }
     var host = String(d.ip).indexOf(':') >= 0 ? '[' + d.ip + ']' : d.ip;
+    signOut();
     location.href = 'http://' + host + ':' + (d.port || 8080) + '/#/pin';
   }
   function openDevices() {
@@ -330,7 +350,7 @@
     api('/api/auth', { method: 'POST', json: { pin: pin } }).then(function (r) {
       if (r.ok) {
         if (r.data.token) safeSet(TOKEN_KEY, r.data.token);
-        location.hash = '#/files/';
+        redirect('#/files/');
         return;
       }
       if (r.status === 429) {
@@ -361,8 +381,11 @@
   $('pin-form').addEventListener('submit', submitPin);
   // "All devices" must always work, even if the address already says #/devices.
   document.querySelector('#view-pin .back').addEventListener('click', function (ev) {
+    if (safeGet(TOKEN_KEY)) signOut();
     if (location.hash === '#/devices') { ev.preventDefault(); route(); }
   });
+  // Leaving an unlocked session for the device list signs this browser out.
+  $('switch-device').addEventListener('click', function () { signOut(); });
   function openPin() {
     show('view-pin');
     $('pin-device-name').textContent = (state.info && state.info.name) || 'This device';
@@ -485,8 +508,8 @@
   function openFiles(path) {
     path = '/' + path.split('/').filter(Boolean).join('/');
     return api('/api/files?path=' + q(path)).then(function (r) {
-      if (r.status === 401) { safeDel(TOKEN_KEY); location.hash = '#/pin'; return; }
-      if (r.status === 404) { toast('That folder no longer exists.'); location.hash = '#/files/'; return; }
+      if (r.status === 401) { safeDel(TOKEN_KEY); redirect('#/pin'); return; }
+      if (r.status === 404) { toast('That folder no longer exists.'); redirect('#/files/'); return; }
       if (!r.ok) { message('Could not open this folder', r.data.error || 'The device returned an error.', function () { route(); }); return; }
       state.path = r.data.path || path;
       state.entries = r.data.entries || [];
@@ -636,7 +659,7 @@
     var h = decodeURIComponent(location.hash.replace(/^#/, '')) || '/';
     if (h.indexOf('/files') === 0) return openFiles(h.slice(6) || '/');
     if (h === '/pin') {
-      if (state.info && state.info.requiresPin === false) { location.hash = '#/files/'; return; }
+      if (state.info && state.info.requiresPin === false) { redirect('#/files/'); return; }
       return openPin();
     }
     if (h === '/devices') return openDevices();
@@ -644,7 +667,7 @@
     // Without a stored token we skip the probe to avoid a noisy 401.
     if (!safeGet(TOKEN_KEY)) return openDevices();
     return api('/api/files?path=%2F').then(function (r) {
-      if (r.ok) location.hash = '#/files/';
+      if (r.ok) redirect('#/files/');
       else openDevices();
     }).catch(offline);
   }
