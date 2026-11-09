@@ -23,6 +23,7 @@
     previewList: [],
     previewIndex: -1,
     devicesTimer: null,
+    lastDevices: [],
     lockedUntil: 0
   };
 
@@ -183,6 +184,7 @@
     currentView = id;
     VIEWS.forEach(function (v) { $(v).hidden = v !== id; });
     if (id !== 'view-devices' && state.devicesTimer) { clearInterval(state.devicesTimer); state.devicesTimer = null; }
+    if (id !== 'view-files') cancelThumbs();
     $('switch-device').hidden = id !== 'view-files';
     $('brand-status').hidden = id !== 'view-files';
     window.scrollTo(0, 0);
@@ -296,10 +298,22 @@
     }
     return api('/api/devices').then(function (r) {
       if (!r.ok) throw new Error('devices');
-      renderDevices(Array.isArray(r.data) ? r.data : (r.data.devices || []), first);
+      var list = Array.isArray(r.data) ? r.data : (r.data.devices || []);
+      state.lastDevices = list.slice();
+      renderDevices(list, first);
     }).catch(function () {
-      if (first) offline();
+      if (conn.stopped) renderUnreachableDevices();
+      else if (first) offline();
     });
+  }
+  // This phone is gone, so it can't list the others. Show the ones we saw
+  // last, so you can still jump straight to another phone.
+  function renderUnreachableDevices() {
+    var others = state.lastDevices.filter(function (d) { return !d.self; });
+    renderDevices(others, false);
+    $('devices-count').textContent = others.length
+      ? "This phone isn't reachable. Devices seen earlier:"
+      : "This phone isn't reachable, so it can't list other devices. Open another phone's address directly.";
   }
   function pickDevice(d) {
     if (d.self) { location.hash = '#/pin'; return; }
@@ -388,6 +402,11 @@
   });
   // Leaving an unlocked session for the device list signs this browser out.
   $('switch-device').addEventListener('click', function () { signOut(); });
+  // "Other devices" on the message page: a plain #/devices link does nothing
+  // when the address already says #/devices, so route by hand in that case.
+  $('msg-devices').addEventListener('click', function (ev) {
+    if (location.hash === '#/devices') { ev.preventDefault(); route(); }
+  });
   function openPin() {
     show('view-pin');
     $('pin-device-name').textContent = (state.info && state.info.name) || 'This device';
@@ -430,17 +449,76 @@
   function thumbUrl(p, size) {
     return state.info && state.info.thumbs ? '/api/thumb?path=' + q(p) + '&size=' + size : rawUrl(p);
   }
+  // ---------- thumbnail loader ----------
+  // The phone makes thumbnails 3 at a time, and a browser opens at most 6
+  // connections to one host. Loading every thumbnail at once filled all 6, so
+  // the /api/info heartbeat and any click (like the home link) queued behind
+  // them, timed out, and the page wrongly said the phone was unreachable.
+  // So: load at most 3 at a time, only once on screen, and cancel the rest
+  // when the file list goes away.
+  var THUMB_MAX = 3;
+  var thumbQ = { queue: [], active: [] };
+  var thumbObserver = window.IntersectionObserver ? new IntersectionObserver(function (entries) {
+    entries.forEach(function (en) {
+      if (!en.isIntersecting) return;
+      thumbObserver.unobserve(en.target);
+      thumbQ.queue.push(en.target);
+    });
+    pumpThumbs();
+  }, { rootMargin: '200px' }) : null;
+  function lazySrc(img, url) {
+    img.dataset.src = url;
+    if (thumbObserver) thumbObserver.observe(img);
+    else { thumbQ.queue.push(img); pumpThumbs(); }
+    return img;
+  }
+  // Retry (e.g. thumb -> raw image) ahead of anything not started yet.
+  function requeueThumb(img, url) {
+    img.dataset.src = url;
+    thumbQ.queue.unshift(img);
+  }
+  function pumpThumbs() {
+    while (thumbQ.active.length < THUMB_MAX && thumbQ.queue.length) {
+      var img = thumbQ.queue.shift();
+      if (!img.isConnected || !img.dataset.src || img.dataset.cancelled) continue;
+      startThumb(img);
+    }
+  }
+  function startThumb(img) {
+    thumbQ.active.push(img);
+    var done = function () {
+      img.removeEventListener('load', done);
+      img.removeEventListener('error', done);
+      var i = thumbQ.active.indexOf(img);
+      if (i >= 0) thumbQ.active.splice(i, 1);
+      pumpThumbs();
+    };
+    img.addEventListener('load', done);
+    img.addEventListener('error', done);
+    img.src = img.dataset.src;
+  }
+  function cancelThumbs() {
+    if (thumbObserver) thumbObserver.disconnect();
+    thumbQ.queue.length = 0;
+    thumbQ.active.forEach(function (img) {
+      img.dataset.cancelled = '1';
+      img.removeAttribute('src'); // aborts the request and frees the connection
+    });
+    thumbQ.active.length = 0;
+  }
   function fadeInOnLoad(img) {
     img.classList.add('fade-img');
     img.addEventListener('load', function () { img.classList.add('loaded'); });
     return img;
   }
   function thumbImg(p, size, fallback, noRaw) {
-    var img = fadeInOnLoad(el('img', { src: thumbUrl(p, size), alt: '', loading: 'lazy', decoding: 'async' }));
+    var img = fadeInOnLoad(el('img', { alt: '', decoding: 'async' }));
+    lazySrc(img, thumbUrl(p, size));
     img.addEventListener('error', function () {
+      if (img.dataset.cancelled) return;
       if (!noRaw && img.dataset.triedRaw !== '1' && state.info && state.info.thumbs) {
         img.dataset.triedRaw = '1';
-        img.src = rawUrl(p); // e.g. 415 for a format the phone can't shrink
+        requeueThumb(img, rawUrl(p)); // e.g. 415 for a format the phone can't shrink
       } else if (img.parentNode) {
         img.parentNode.replaceChild(fallback(), img);
       }
@@ -452,8 +530,9 @@
     // Only use real thumbnails in the list; full images would be too heavy.
     if (k !== 'img' || !(state.info && state.info.thumbs)) return plain();
     var box = el('span', { class: 'ficon img has-thumb' });
-    var img = fadeInOnLoad(el('img', { src: thumbUrl(p, 128), alt: '', loading: 'lazy', decoding: 'async' }));
-    img.addEventListener('error', function () { if (box.parentNode) box.parentNode.replaceChild(plain(), box); });
+    var img = fadeInOnLoad(el('img', { alt: '', decoding: 'async' }));
+    lazySrc(img, thumbUrl(p, 128));
+    img.addEventListener('error', function () { if (!img.dataset.cancelled && box.parentNode) box.parentNode.replaceChild(plain(), box); });
     box.appendChild(img);
     return box;
   }
@@ -461,6 +540,7 @@
   function renderFiles(animate) {
     var list = visibleEntries();
     var rows = $('file-rows'), grid = $('grid-box');
+    cancelThumbs();
     rows.textContent = ''; grid.textContent = '';
     rows.classList.toggle('stagger', !!animate);
     grid.classList.toggle('stagger', !!animate);
