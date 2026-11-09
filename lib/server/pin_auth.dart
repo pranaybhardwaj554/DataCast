@@ -38,11 +38,18 @@ class _Failures {
 /// A 4-digit PIN has only 10,000 combinations, so each client IP gets
 /// [maxAttempts] tries before being locked out. Every further lockout doubles
 /// the wait, starting at [baseLockout].
+///
+/// Per-IP limits alone are easy to dodge on a LAN (pick another address, or
+/// use many devices), so wrong PINs from all clients together are also
+/// counted: every [globalMaxFailures] of them lock out new sign-ins from
+/// everyone, again doubling each time. Signed-in clients keep working. The
+/// count only resets when the PIN changes or sharing restarts.
 class PinAuth {
   PinAuth({
     String? pin,
     this.maxAttempts = 5,
     this.baseLockout = const Duration(seconds: 30),
+    this.globalMaxFailures = 20,
     this.tokenIdleTimeout = const Duration(hours: 12),
     this.activeWindow = const Duration(seconds: 15),
     DateTime Function()? clock,
@@ -54,6 +61,11 @@ class PinAuth {
 
   final int maxAttempts;
   final Duration baseLockout;
+  final int globalMaxFailures;
+
+  /// Per-IP failure records kept at most; older unlocked ones are dropped so
+  /// a flood of addresses can't grow memory without bound.
+  static const maxTrackedClients = 1024;
   final Duration tokenIdleTimeout;
 
   /// A client counts as "connected" if it made a request within this window.
@@ -65,6 +77,15 @@ class PinAuth {
   late String _pin;
   final Map<String, _Session> _tokens = {};
   final Map<String, _Failures> _failures = {};
+  final _Failures _global = _Failures();
+
+  /// Called when wrong PINs from all clients together trigger a lockout, so
+  /// the app can warn the person sharing (and, say, offer a new PIN).
+  void Function(int totalFailures)? onBruteForce;
+  int _totalFailures = 0;
+
+  /// Wrong PINs since the PIN was last set.
+  int get totalFailures => _totalFailures;
 
   /// Called whenever the set of connected clients may have changed.
   void Function()? onClientsChanged;
@@ -93,6 +114,11 @@ class PinAuth {
   void revokeAll() {
     _tokens.clear();
     _failures.clear();
+    _global
+      ..count = 0
+      ..lockouts = 0
+      ..lockedUntil = null;
+    _totalFailures = 0;
     onClientsChanged?.call();
   }
 
@@ -106,6 +132,11 @@ class PinAuth {
 
   AuthResult attempt(String clientKey, String? pin) {
     final now = _clock();
+    final globalUntil = _global.lockedUntil;
+    if (globalUntil != null && now.isBefore(globalUntil)) {
+      return AuthLocked(globalUntil.difference(now));
+    }
+    if (!_failures.containsKey(clientKey)) _pruneFailures(now);
     final f = _failures.putIfAbsent(clientKey, _Failures.new);
     final lockedUntil = f.lockedUntil;
     if (lockedUntil != null && now.isBefore(lockedUntil)) {
@@ -120,6 +151,17 @@ class PinAuth {
       return AuthGranted(token);
     }
     f.count++;
+    _totalFailures++;
+    _global.count++;
+    if (_global.count >= globalMaxFailures) {
+      final wait = baseLockout * (1 << min(_global.lockouts, 10));
+      _global
+        ..lockouts += 1
+        ..count = 0
+        ..lockedUntil = now.add(wait);
+      onBruteForce?.call(_totalFailures);
+      return AuthLocked(wait);
+    }
     if (f.count >= maxAttempts) {
       final wait = baseLockout * (1 << min(f.lockouts, 10));
       f
@@ -129,6 +171,15 @@ class PinAuth {
       return AuthLocked(wait);
     }
     return AuthDenied(maxAttempts - f.count);
+  }
+
+  void _pruneFailures(DateTime now) {
+    if (_failures.length < maxTrackedClients) return;
+    _failures.removeWhere((_, f) => f.lockedUntil == null || !now.isBefore(f.lockedUntil!));
+    // Everyone still locked: drop the oldest entries.
+    while (_failures.length >= maxTrackedClients) {
+      _failures.remove(_failures.keys.first);
+    }
   }
 
   /// Returns true and refreshes the token if it is valid.

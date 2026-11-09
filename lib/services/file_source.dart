@@ -53,10 +53,24 @@ class IoFileSource extends FileSource {
       ? root.path
       : '${root.path}${Platform.pathSeparator}${path.substring(1).replaceAll('/', Platform.pathSeparator)}';
 
+  /// True when no folder between the root and [path] (inclusive) is a
+  /// symlink. Listings already hide links, but the OS follows a link in the
+  /// middle of a path, so `/link-to-root/etc/passwd` would otherwise escape
+  /// the shared folder.
+  Future<bool> _noLinks(String path) async {
+    if (path == '/') return true;
+    var abs = root.path;
+    for (final seg in path.substring(1).split('/')) {
+      abs = '$abs${Platform.pathSeparator}$seg';
+      if (await FileSystemEntity.isLink(abs)) return false;
+    }
+    return true;
+  }
+
   @override
   Future<List<FileEntry>> list(String path) async {
     final dir = Directory(_abs(path));
-    if (!await dir.exists()) throw FileNotFound(path);
+    if (!await _noLinks(path) || !await dir.exists()) throw FileNotFound(path);
     final out = <FileEntry>[];
     await for (final e in dir.list(followLinks: false)) {
       final name = e.path.substring(e.path.lastIndexOf(Platform.pathSeparator) + 1);
@@ -91,6 +105,7 @@ class IoFileSource extends FileSource {
     if (path == '/') {
       return FileEntry(name: displayName, path: '/', isDir: true);
     }
+    if (!await _noLinks(path)) return null;
     final abs = _abs(path);
     final type = await FileSystemEntity.type(abs, followLinks: false);
     if (type == FileSystemEntityType.directory) return _entryFor(Directory(abs), path);
@@ -99,6 +114,8 @@ class IoFileSource extends FileSource {
   }
 
   @override
-  Stream<List<int>> read(String path, {int start = 0, int? end}) =>
-      File(_abs(path)).openRead(start, end == null ? null : end + 1);
+  Stream<List<int>> read(String path, {int start = 0, int? end}) async* {
+    if (!await _noLinks(path)) throw FileNotFound(path);
+    yield* File(_abs(path)).openRead(start, end == null ? null : end + 1);
+  }
 }
