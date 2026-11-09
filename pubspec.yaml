@@ -1,0 +1,28 @@
+name: datacast
+description: "Share a folder with devices on your Wi-Fi."
+publish_to: 'none'
+version: 0.1.0+1
+
+environment:
+  sdk: ^3.13.7
+
+dependencies:
+  bonsoir: ^7.1.6
+  flutter:
+    sdk: flutter
+  mime: ^2.1.0
+  qr_flutter: ^4.1.0
+  shared_preferences: ^2.5.6
+  shelf: ^1.4.3
+  shelf_router: ^1.1.5
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+  http: ^1.6.0
+
+flutter:
+  uses-material-design: true
+  assets:
+    - assets/web/
