@@ -522,6 +522,8 @@
     }
     if (h === '/devices') return openDevices();
     // Landing: straight to files if this browser is already unlocked.
+    // Without a stored token we skip the probe to avoid a noisy 401.
+    if (!safeGet(TOKEN_KEY)) return openDevices();
     return api('/api/files?path=%2F').then(function (r) {
       if (r.ok) location.hash = '#/files/';
       else openDevices();
