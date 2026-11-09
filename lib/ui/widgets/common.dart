@@ -54,7 +54,13 @@ class _LiveBadgeState extends State<LiveBadge> with SingleTickerProviderStateMix
   Widget build(BuildContext context) {
     final t = DcTheme.of(context);
     final reduceMotion = MediaQuery.of(context).disableAnimations;
-    return Semantics(
+    // Pops in when sharing starts.
+    return TweenAnimationBuilder<double>(
+      tween: Tween(begin: reduceMotion ? 1 : 0.6, end: 1),
+      duration: reduceMotion ? Duration.zero : const Duration(milliseconds: 420),
+      curve: Curves.easeOutBack,
+      builder: (context, v, child) => Transform.scale(scale: v, child: Opacity(opacity: v.clamp(0.0, 1.0), child: child)),
+      child: Semantics(
       label: 'Sharing is live',
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
@@ -71,6 +77,7 @@ class _LiveBadgeState extends State<LiveBadge> with SingleTickerProviderStateMix
           const SizedBox(width: 8),
           Text('Live', style: TextStyle(color: t.liveInk, fontWeight: FontWeight.w600, fontSize: 13)),
         ]),
+      ),
       ),
     );
   }

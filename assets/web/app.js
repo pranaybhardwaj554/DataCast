@@ -130,20 +130,48 @@
   function joinPath(dir, name) { return (dir === '/' ? '' : dir) + '/' + name; }
   function entryPath(e) { return e.path || joinPath(state.path, e.name); }
 
+  var reduceMotion = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  // Hides an element after its CSS exit animation (class "leaving") ends.
+  function hideAfterLeave(node, ms) {
+    if (node.hidden) return;
+    if (reduceMotion) { node.hidden = true; return; }
+    node.classList.add('leaving');
+    clearTimeout(node._leaveTimer);
+    node._leaveTimer = setTimeout(function () { node.hidden = true; node.classList.remove('leaving'); }, ms || 180);
+  }
+  function unhide(node) {
+    clearTimeout(node._leaveTimer);
+    node.classList.remove('leaving');
+    node.hidden = false;
+  }
+
   var toastTimer;
   function toast(msg) {
-    var t = $('toast'); t.textContent = msg; t.hidden = false;
-    clearTimeout(toastTimer); toastTimer = setTimeout(function () { t.hidden = true; }, 3200);
+    var t = $('toast'); t.textContent = msg; unhide(t);
+    clearTimeout(toastTimer); toastTimer = setTimeout(function () { hideAfterLeave(t, 200); }, 3200);
   }
 
   // ---------- views ----------
   var VIEWS = ['view-devices', 'view-pin', 'view-files', 'view-message'];
+  var currentView = null;
   function show(id) {
+    if (id !== currentView && document.startViewTransition && !reduceMotion && currentView) {
+      // Native cross-fade between the old and new page (Chrome, Edge, Safari 18+).
+      document.documentElement.classList.add('vt');
+      var vt = document.startViewTransition(function () { swapView(id); });
+      vt.finished.then(function () { document.documentElement.classList.remove('vt'); }, function () {});
+    } else swapView(id);
+  }
+  function swapView(id) {
+    currentView = id;
     VIEWS.forEach(function (v) { $(v).hidden = v !== id; });
     if (id !== 'view-devices' && state.devicesTimer) { clearInterval(state.devicesTimer); state.devicesTimer = null; }
     $('switch-device').hidden = id !== 'view-files';
     $('brand-status').hidden = id !== 'view-files';
     window.scrollTo(0, 0);
+    // Focus can only land once the view is visible (the swap may run late
+    // inside a view transition).
+    if (id === 'view-pin') { var first = document.querySelector('.pin-inputs input'); if (first && !first.disabled) first.focus(); }
   }
   function message(title, body, retry) {
     $('msg-title').textContent = title;
@@ -187,7 +215,7 @@
     }, markLost).then(scheduleBeat);
   }
   function setLost(on) {
-    $('conn-bar').hidden = !on;
+    if (on) unhide($('conn-bar')); else hideAfterLeave($('conn-bar'), 200);
     var st = $('brand-status');
     st.classList.toggle('warn', on);
     $('brand-status-text').textContent = on ? 'Reconnecting…' : 'Connected';
@@ -215,9 +243,10 @@
   document.addEventListener('visibilitychange', function () { if (!document.hidden) beat(); });
 
   // ---------- devices ----------
-  function renderDevices(list) {
+  function renderDevices(list, animate) {
     var grid = $('device-grid');
     grid.textContent = '';
+    grid.classList.toggle('stagger', !!animate); // only on first load, not every refresh
     if (!list.length) {
       $('devices-count').textContent = 'Searching…';
       return;
@@ -239,6 +268,7 @@
           el('span', { class: 'tag', text: d.self ? 'This one' : 'Open' })
         ])
       ]);
+      card.style.setProperty('--i', Math.min(grid.children.length, 12));
       grid.appendChild(card);
     });
   }
@@ -249,7 +279,7 @@
     }
     return api('/api/devices').then(function (r) {
       if (!r.ok) throw new Error('devices');
-      renderDevices(Array.isArray(r.data) ? r.data : (r.data.devices || []));
+      renderDevices(Array.isArray(r.data) ? r.data : (r.data.devices || []), first);
     }).catch(function () {
       if (first) offline();
     });
@@ -375,8 +405,13 @@
   function thumbUrl(p, size) {
     return state.info && state.info.thumbs ? '/api/thumb?path=' + q(p) + '&size=' + size : rawUrl(p);
   }
+  function fadeInOnLoad(img) {
+    img.classList.add('fade-img');
+    img.addEventListener('load', function () { img.classList.add('loaded'); });
+    return img;
+  }
   function thumbImg(p, size, fallback, noRaw) {
-    var img = el('img', { src: thumbUrl(p, size), alt: '', loading: 'lazy', decoding: 'async' });
+    var img = fadeInOnLoad(el('img', { src: thumbUrl(p, size), alt: '', loading: 'lazy', decoding: 'async' }));
     img.addEventListener('error', function () {
       if (!noRaw && img.dataset.triedRaw !== '1' && state.info && state.info.thumbs) {
         img.dataset.triedRaw = '1';
@@ -392,19 +427,21 @@
     // Only use real thumbnails in the list; full images would be too heavy.
     if (k !== 'img' || !(state.info && state.info.thumbs)) return plain();
     var box = el('span', { class: 'ficon img has-thumb' });
-    var img = el('img', { src: thumbUrl(p, 128), alt: '', loading: 'lazy', decoding: 'async' });
+    var img = fadeInOnLoad(el('img', { src: thumbUrl(p, 128), alt: '', loading: 'lazy', decoding: 'async' }));
     img.addEventListener('error', function () { if (box.parentNode) box.parentNode.replaceChild(plain(), box); });
     box.appendChild(img);
     return box;
   }
 
-  function renderFiles() {
+  function renderFiles(animate) {
     var list = visibleEntries();
     var rows = $('file-rows'), grid = $('grid-box');
     rows.textContent = ''; grid.textContent = '';
-    list.forEach(function (e) {
+    rows.classList.toggle('stagger', !!animate);
+    grid.classList.toggle('stagger', !!animate);
+    list.forEach(function (e, idx) {
       var k = kindOf(e), p = entryPath(e);
-      var nameBtn = el('button', { type: 'button', class: 'fname', onclick: function () { activate(e, list); } }, [
+      var nameBtn = el('button', { type: 'button', class: 'fname', onclick: function (ev) { originFrom(ev.currentTarget); activate(e, list); } }, [
         listIcon(e, k, p),
         el('span', { class: 'fname-text' }, [
           el('span', { text: e.name }),
@@ -414,7 +451,7 @@
       var dl = e.isDir
         ? (state.info && state.info.allowZip ? el('a', { class: 'icon-btn', href: '/api/zip?path=' + q(p), 'aria-label': 'Download ' + e.name + ' as zip' }, [icon('download', 16)]) : null)
         : el('a', { class: 'icon-btn', href: downloadUrl(p), download: e.name, 'aria-label': 'Download ' + e.name }, [icon('download', 16)]);
-      rows.appendChild(el('tr', null, [
+      rows.appendChild(el('tr', { style: '--i:' + Math.min(idx, 14) }, [
         el('td', null, [nameBtn]),
         el('td', { class: 'col-size', text: e.isDir ? '—' : fmtSize(e.size) }),
         el('td', { class: 'col-date', text: fmtDate(e.modified) }),
@@ -429,7 +466,7 @@
         thumb.appendChild(el('span', { class: 'play-badge', 'aria-hidden': 'true' }, [icon('vid', 14)]));
       }
       else thumb.appendChild(bigIcon());
-      grid.appendChild(el('button', { type: 'button', class: 'tile', title: e.name, onclick: function () { activate(e, list); } }, [
+      grid.appendChild(el('button', { type: 'button', class: 'tile', title: e.name, style: '--i:' + Math.min(idx, 18), onclick: function (ev) { originFrom(ev.currentTarget); activate(e, list); } }, [
         thumb, el('span', { class: 'tile-label', text: e.name })
       ]));
     });
@@ -459,29 +496,39 @@
       zip.hidden = !(state.info && state.info.allowZip && state.entries.length);
       zip.href = '/api/zip?path=' + q(state.path);
       renderCrumbs(state.path);
-      renderFiles();
+      renderFiles(true);
     }).catch(offline);
   }
   $('search').addEventListener('input', function (ev) { state.query = ev.target.value; renderFiles(); });
-  $('view-list').addEventListener('click', function () { state.layout = 'list'; safeSet(VIEW_KEY, 'list'); renderFiles(); });
-  $('view-grid').addEventListener('click', function () { state.layout = 'grid'; safeSet(VIEW_KEY, 'grid'); renderFiles(); });
+  $('view-list').addEventListener('click', function () { if (state.layout === 'list') return; state.layout = 'list'; safeSet(VIEW_KEY, 'list'); renderFiles(true); });
+  $('view-grid').addEventListener('click', function () { if (state.layout === 'grid') return; state.layout = 'grid'; safeSet(VIEW_KEY, 'grid'); renderFiles(true); });
 
   // ---------- preview ----------
   var lastFocus = null;
+  // The preview grows out of whatever was tapped.
+  function originFrom(node) {
+    var r = node.getBoundingClientRect();
+    var pv = $('preview');
+    pv.style.setProperty('--ox', Math.round(r.left + r.width / 2) + 'px');
+    pv.style.setProperty('--oy', Math.round(r.top + r.height / 2) + 'px');
+  }
   function openPreview(e, list) {
     state.previewList = list.filter(function (x) { return !x.isDir && kindOf(x) !== 'other'; });
     state.previewIndex = state.previewList.indexOf(e);
     lastFocus = document.activeElement;
-    $('preview').hidden = false;
+    unhide($('preview'));
     document.body.style.overflow = 'hidden';
-    renderPreview();
+    renderPreview(0);
     $('pv-close').focus();
   }
-  function renderPreview() {
+  function renderPreview(dir) {
     var e = state.previewList[state.previewIndex];
     if (!e) return closePreview();
     var p = entryPath(e), k = kindOf(e), box = $('pv-content');
     box.textContent = '';
+    box.style.transform = ''; box.style.opacity = '';
+    box.classList.remove('from-left', 'from-right');
+    if (dir) { void box.offsetWidth; box.classList.add(dir > 0 ? 'from-right' : 'from-left'); }
     $('pv-name').textContent = e.name;
     $('pv-sub').textContent = fmtSize(e.size) + ' · ' + (state.previewIndex + 1) + ' of ' + state.previewList.length;
     $('pv-download').href = downloadUrl(p);
@@ -489,7 +536,7 @@
     $('pv-prev').disabled = state.previewIndex <= 0;
     $('pv-next').disabled = state.previewIndex >= state.previewList.length - 1;
     if (k === 'img') {
-      var img = el('img', { src: rawUrl(p), alt: e.name });
+      var img = fadeInOnLoad(el('img', { src: rawUrl(p), alt: e.name }));
       img.addEventListener('error', function () { unsupported(box, e); });
       box.appendChild(img);
     } else if (k === 'vid') {
@@ -516,16 +563,23 @@
     ]));
   }
   function closePreview(silent) {
-    if ($('preview').hidden) return;
-    $('preview').hidden = true;
-    $('pv-content').textContent = ''; // stops media
+    var pv = $('preview');
+    if (pv.hidden || pv.classList.contains('leaving')) return;
+    // Stop media now; let the overlay animate out, then clear it.
+    var media = pv.querySelector('video, audio');
+    if (media) media.pause();
+    if (silent) { pv.hidden = true; $('pv-content').textContent = ''; }
+    else {
+      hideAfterLeave(pv, 200);
+      setTimeout(function () { if (pv.hidden) $('pv-content').textContent = ''; }, 220);
+    }
     document.body.style.overflow = '';
     if (!silent && lastFocus) lastFocus.focus();
   }
   function step(d) {
     var n = state.previewIndex + d;
     if (n < 0 || n >= state.previewList.length) return;
-    state.previewIndex = n; renderPreview();
+    state.previewIndex = n; renderPreview(d);
   }
   $('pv-close').addEventListener('click', function () { closePreview(); });
   $('pv-prev').addEventListener('click', function () { step(-1); });
@@ -540,11 +594,38 @@
   (function () {
     var x0 = null;
     var stage = document.querySelector('.pv-stage');
-    stage.addEventListener('touchstart', function (e) { x0 = e.touches[0].clientX; }, { passive: true });
+    // The file follows the finger, then either slides away to the next
+    // one or springs back. Edges resist.
+    var y0 = null, dragging = false, box = $('pv-content');
+    stage.addEventListener('touchstart', function (e) {
+      if (e.touches.length !== 1) { x0 = null; return; }
+      x0 = e.touches[0].clientX; y0 = e.touches[0].clientY; dragging = false;
+      box.style.transition = 'none';
+    }, { passive: true });
+    stage.addEventListener('touchmove', function (e) {
+      if (x0 == null || reduceMotion) return;
+      var dx = e.touches[0].clientX - x0, dy = e.touches[0].clientY - y0;
+      if (!dragging && Math.abs(dx) < 8) return;
+      if (!dragging && Math.abs(dy) > Math.abs(dx)) { x0 = null; return; } // vertical: let it scroll
+      dragging = true;
+      var atEdge = (dx > 0 && state.previewIndex <= 0) || (dx < 0 && state.previewIndex >= state.previewList.length - 1);
+      var shift = atEdge ? dx / 3 : dx;
+      box.style.transform = 'translateX(' + shift + 'px)';
+      box.style.opacity = String(1 - Math.min(Math.abs(shift) / 600, 0.4));
+    }, { passive: true });
     stage.addEventListener('touchend', function (e) {
       if (x0 == null) return;
       var dx = e.changedTouches[0].clientX - x0; x0 = null;
-      if (Math.abs(dx) > 60) step(dx < 0 ? 1 : -1);
+      var d = dx < 0 ? 1 : -1, n = state.previewIndex + d;
+      box.style.transition = '';
+      if (Math.abs(dx) > 60 && n >= 0 && n < state.previewList.length) {
+        if (reduceMotion) { step(d); return; }
+        box.style.transform = 'translateX(' + (d > 0 ? -40 : 40) + 'vw)';
+        box.style.opacity = '0';
+        setTimeout(function () { step(d); }, 160);
+      } else {
+        box.style.transform = ''; box.style.opacity = '';
+      }
     });
   })();
   $('devices-refresh').addEventListener('click', function () { loadDevices(true); });

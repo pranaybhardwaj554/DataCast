@@ -7,6 +7,7 @@ import '../../models/shared_file.dart';
 import '../../services/sharing_controller.dart';
 import '../theme/app_theme.dart';
 import '../widgets/common.dart';
+import '../widgets/motion.dart';
 import 'settings_screen.dart';
 
 /// The app's only top-level screen. Shows the idle "choose a folder" state,
@@ -20,12 +21,15 @@ class HomeScreen extends StatelessWidget {
     return ListenableBuilder(
       listenable: controller,
       builder: (context, _) {
-        return AnimatedSwitcher(
-          duration: const Duration(milliseconds: 250),
-          child: controller.isSharing
-              ? _SharingView(key: const ValueKey('sharing'), controller: controller)
-              : _IdleView(key: const ValueKey('idle'), controller: controller),
-        );
+        final Widget screen;
+        if (controller.isSharing) {
+          screen = _SharingView(key: const ValueKey('sharing'), controller: controller);
+        } else if (!controller.hasNetwork) {
+          screen = _NoWifiView(key: const ValueKey('nowifi'), controller: controller);
+        } else {
+          screen = _IdleView(key: const ValueKey('idle'), controller: controller);
+        }
+        return FadeThroughSwitcher(duration: DcMotion.screen, dy: 0.04, child: screen);
       },
     );
   }
@@ -69,8 +73,6 @@ class _IdleViewState extends State<_IdleView> {
     final ready = _mode == ShareMode.folder ? folderPicked : filesPicked;
     final Future<void> Function() pick = _mode == ShareMode.folder ? c.pickFolder : c.pickFiles;
 
-    if (!c.hasNetwork) return _NoWifiView(controller: c);
-
     return Scaffold(
       body: SafeArea(
         child: Padding(
@@ -99,23 +101,41 @@ class _IdleViewState extends State<_IdleView> {
               child: ListView(
                 padding: const EdgeInsets.only(top: 24),
                 children: [
-                  Text(_mode == ShareMode.folder ? 'Share a folder' : 'Share files',
-                      style: text.headlineMedium?.copyWith(fontSize: 34, letterSpacing: -1)),
+                  FadeThroughSwitcher(
+                    alignment: Alignment.centerLeft,
+                    duration: DcMotion.quick,
+                    child: Text(_mode == ShareMode.folder ? 'Share a folder' : 'Share files',
+                        key: ValueKey(_mode),
+                        style: text.headlineMedium?.copyWith(fontSize: 34, letterSpacing: -1)),
+                  ),
                   const SizedBox(height: 10),
                   Text('Wi-Fi  ·  Link  ·  PIN',
                       style: text.bodyMedium?.copyWith(fontWeight: FontWeight.w500)),
                   const SizedBox(height: 24),
-                  if (c.stopReason != null) ...[
-                    _StoppedCard(reason: c.stopReason!, onDismiss: c.clearStopReason),
-                    const SizedBox(height: 14),
-                  ],
+                  Reveal(
+                    visible: c.stopReason != null,
+                    child: Padding(
+                      padding: const EdgeInsets.only(bottom: 14),
+                      child: c.stopReason == null
+                          ? const SizedBox.shrink()
+                          : _StoppedCard(reason: c.stopReason!, onDismiss: c.clearStopReason),
+                    ),
+                  ),
                   _ModeSwitch(
                     mode: _mode,
                     onChanged: _busy ? null : (m) => setState(() => _mode = m),
                   ),
                   const SizedBox(height: 14),
-                  if (_mode == ShareMode.folder)
-                    DcCard(
+                  AnimatedSize(
+                    duration: DcMotion.of(context, DcMotion.medium),
+                    curve: DcMotion.resize,
+                    alignment: Alignment.topCenter,
+                    child: FadeThroughSwitcher(
+                      duration: DcMotion.medium,
+                      dy: 0.02,
+                      child: _mode == ShareMode.folder
+                  ? DcCard(
+                      key: const ValueKey('folder-card'),
                       child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
                         const SectionLabel('Folder'),
                         Row(children: [
@@ -146,8 +166,8 @@ class _IdleViewState extends State<_IdleView> {
                         ),
                       ]),
                     )
-                  else
-                    DcCard(
+                  : DcCard(
+                      key: const ValueKey('files-card'),
                       child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
                         SectionLabel(filesPicked ? _filesSummary(c.sharedFiles) : 'Files'),
                         if (!filesPicked)
@@ -157,9 +177,13 @@ class _IdleViewState extends State<_IdleView> {
                           ),
                         if (filesPicked)
                           for (var i = 0; i < c.sharedFiles.length; i++)
-                            _PickedFileRow(
-                              file: c.sharedFiles[i],
-                              onRemove: _busy ? null : () => c.removeSharedFile(i),
+                            EnterOnce(
+                              key: ValueKey(c.sharedFiles[i].uri),
+                              delay: Duration(milliseconds: 40 * (i < 8 ? i : 8)),
+                              child: _PickedFileRow(
+                                file: c.sharedFiles[i],
+                                onRemove: _busy ? null : () => c.removeSharedFile(i),
+                              ),
                             ),
                         const SizedBox(height: 10),
                         OutlinedButton.icon(
@@ -169,20 +193,36 @@ class _IdleViewState extends State<_IdleView> {
                         ),
                       ]),
                     ),
-                  if (c.error != null) ...[
-                    const SizedBox(height: 16),
-                    NoticeBanner(text: c.error!, isError: true),
-                  ],
+                    ),
+                  ),
+                  Reveal(
+                    visible: c.error != null,
+                    child: Padding(
+                      padding: const EdgeInsets.only(top: 16),
+                      child: NoticeBanner(text: c.error ?? '', isError: true),
+                    ),
+                  ),
                 ],
               ),
             ),
             FilledButton.icon(
               onPressed: _busy ? null : () => _run(ready ? c.start : pick),
-              icon: _busy
-                  ? const SizedBox(
-                      width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
-                  : Icon(ready ? Icons.wifi_tethering_rounded : Icons.add_rounded),
-              label: Text(ready ? (c.stopReason != null ? 'Start again' : 'Start sharing') : (_mode == ShareMode.folder ? 'Choose a folder' : 'Choose files')),
+              icon: AnimatedSwitcher(
+                duration: DcMotion.of(context, DcMotion.quick),
+                transitionBuilder: (c, a) => ScaleTransition(scale: a, child: FadeTransition(opacity: a, child: c)),
+                child: _busy
+                    ? const SizedBox(
+                        key: ValueKey('busy'),
+                        width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                    : Icon(ready ? Icons.wifi_tethering_rounded : Icons.add_rounded, key: ValueKey(ready)),
+              ),
+              label: AnimatedSwitcher(
+                duration: DcMotion.of(context, DcMotion.quick),
+                child: Text(
+                  ready ? (c.stopReason != null ? 'Start again' : 'Start sharing') : (_mode == ShareMode.folder ? 'Choose a folder' : 'Choose files'),
+                  key: ValueKey('$ready${_mode.name}${c.stopReason != null}'),
+                ),
+              ),
             ),
             const SizedBox(height: 10),
             Text('View & download only',
@@ -212,7 +252,7 @@ String formatBytes(int b) {
 
 /// Full-screen state when the phone has no Wi-Fi or hotspot address.
 class _NoWifiView extends StatelessWidget {
-  const _NoWifiView({required this.controller});
+  const _NoWifiView({super.key, required this.controller});
   final SharingController controller;
 
   @override
@@ -471,7 +511,9 @@ class _SharingView extends StatelessWidget {
                 child: ListView(
                   padding: const EdgeInsets.only(top: 16, bottom: 12),
                   children: [
-                    DcCard(
+                    EnterOnce(
+                      dy: 16,
+                      child: DcCard(
                       padding: const EdgeInsets.all(18),
                       child: Column(children: [
                         Container(
@@ -483,13 +525,19 @@ class _SharingView extends StatelessWidget {
                           ),
                           child: Semantics(
                             label: 'QR code for $shortUrl',
-                            child: QrImageView(
+                            child: FadeThroughSwitcher(
+                              duration: DcMotion.medium,
+                              dy: 0,
+                              alignment: Alignment.center,
+                              child: QrImageView(
+                              key: ValueKey(url),
                               data: url,
                               size: 168,
                               padding: EdgeInsets.zero,
                               eyeStyle: const QrEyeStyle(eyeShape: QrEyeShape.square, color: DcColors.ink),
                               dataModuleStyle: const QrDataModuleStyle(
                                   dataModuleShape: QrDataModuleShape.square, color: DcColors.ink),
+                            ),
                             ),
                           ),
                         ),
@@ -503,13 +551,18 @@ class _SharingView extends StatelessWidget {
                               BoxDecoration(color: t.surface2, borderRadius: BorderRadius.circular(12)),
                           child: Row(children: [
                             Expanded(
-                              child: SelectableText(shortUrl,
-                                  maxLines: 1,
-                                  style: TextStyle(
-                                      fontFamily: AppTheme.display,
-                                      fontWeight: FontWeight.w600,
-                                      fontSize: 17,
-                                      color: t.ink)),
+                              child: FadeThroughSwitcher(
+                                alignment: Alignment.centerLeft,
+                                duration: DcMotion.medium,
+                                child: SelectableText(shortUrl,
+                                    key: ValueKey(shortUrl),
+                                    maxLines: 1,
+                                    style: TextStyle(
+                                        fontFamily: AppTheme.display,
+                                        fontWeight: FontWeight.w600,
+                                        fontSize: 17,
+                                        color: t.ink)),
+                              ),
                             ),
                             IconButton.filled(
                               tooltip: 'Copy link',
@@ -524,8 +577,12 @@ class _SharingView extends StatelessWidget {
                         ),
                       ]),
                     ),
+                    ),
                     const SizedBox(height: 14),
-                    DcCard(
+                    EnterOnce(
+                      dy: 16,
+                      delay: const Duration(milliseconds: 60),
+                      child: DcCard(
                       padding: const EdgeInsets.fromLTRB(18, 14, 14, 14),
                       child: Row(children: [
                         Expanded(
@@ -534,13 +591,32 @@ class _SharingView extends StatelessWidget {
                             Semantics(
                               label: 'PIN ${c.pin.split('').join(' ')}',
                               excludeSemantics: true,
-                              child: Text(c.pin.isEmpty ? '----' : c.pin,
-                                  style: TextStyle(
-                                      fontFamily: AppTheme.display,
-                                      fontWeight: FontWeight.w700,
-                                      fontSize: 34,
-                                      letterSpacing: 9,
-                                      color: t.ink)),
+                              // New PIN rolls up into place, like a counter.
+                              child: AnimatedSwitcher(
+                                duration: DcMotion.of(context, DcMotion.medium),
+                                layoutBuilder: (cur, prev) => Stack(
+                                    alignment: Alignment.centerLeft, children: [...prev, if (cur != null) cur]),
+                                transitionBuilder: (child, a) {
+                                  final incoming = child.key == ValueKey(c.pin);
+                                  final curved = CurvedAnimation(parent: a, curve: DcMotion.enter);
+                                  return ClipRect(
+                                    child: SlideTransition(
+                                      position: Tween(
+                                              begin: Offset(0, incoming ? 0.6 : -0.6), end: Offset.zero)
+                                          .animate(curved),
+                                      child: FadeTransition(opacity: curved, child: child),
+                                    ),
+                                  );
+                                },
+                                child: Text(c.pin.isEmpty ? '----' : c.pin,
+                                    key: ValueKey(c.pin),
+                                    style: TextStyle(
+                                        fontFamily: AppTheme.display,
+                                        fontWeight: FontWeight.w700,
+                                        fontSize: 34,
+                                        letterSpacing: 9,
+                                        color: t.ink)),
+                              ),
                             ),
                           ]),
                         ),
@@ -550,6 +626,7 @@ class _SharingView extends StatelessWidget {
                           label: const Text('New'),
                         ),
                       ]),
+                    ),
                     ),
                     const SizedBox(height: 18),
                     SectionLabel('Connected now · $clients'),
@@ -565,19 +642,27 @@ class _SharingView extends StatelessWidget {
                         ),
                         const SizedBox(width: 12),
                         Expanded(
-                          child: Text(
-                            clients == 0
-                                ? 'Waiting for someone to open the link'
-                                : '$clients ${clients == 1 ? 'device has' : 'devices have'} unlocked with your PIN',
-                            style: text.bodyMedium,
+                          child: FadeThroughSwitcher(
+                            alignment: Alignment.centerLeft,
+                            duration: DcMotion.quick,
+                            child: Text(
+                              clients == 0
+                                  ? 'Waiting for someone to open the link'
+                                  : '$clients ${clients == 1 ? 'device has' : 'devices have'} unlocked with your PIN',
+                              key: ValueKey(clients),
+                              style: text.bodyMedium,
+                            ),
                           ),
                         ),
                       ]),
                     ),
-                    if (c.urlChanged) ...[
-                      const SizedBox(height: 14),
-                      _LinkChangedNotice(onAck: c.acknowledgeUrlChange),
-                    ],
+                    Reveal(
+                      visible: c.urlChanged,
+                      child: Padding(
+                        padding: const EdgeInsets.only(top: 14),
+                        child: _LinkChangedNotice(onAck: c.acknowledgeUrlChange),
+                      ),
+                    ),
                     if (_isIos) ...[
                       const SizedBox(height: 14),
                       const NoticeBanner(
@@ -585,10 +670,13 @@ class _SharingView extends StatelessWidget {
                             'Keep DataCast open on screen. iPhone pauses sharing when you switch apps or lock the phone.',
                       ),
                     ],
-                    if (c.error != null) ...[
-                      const SizedBox(height: 14),
-                      NoticeBanner(text: c.error!, isError: true),
-                    ],
+                    Reveal(
+                      visible: c.error != null,
+                      child: Padding(
+                        padding: const EdgeInsets.only(top: 14),
+                        child: NoticeBanner(text: c.error ?? '', isError: true),
+                      ),
+                    ),
                   ],
                 ),
               ),

@@ -183,6 +183,12 @@ class AppTheme {
             (s) => s.contains(WidgetState.selected) ? t.accent : null),
       ),
       dividerTheme: DividerThemeData(color: t.line, space: 1, thickness: 1),
+      // Screen-to-screen motion: Android's fade-forwards (matches the
+      // predictive back gesture), iOS keeps its native slide.
+      pageTransitionsTheme: const PageTransitionsTheme(builders: {
+        TargetPlatform.android: FadeForwardsPageTransitionsBuilder(),
+        TargetPlatform.iOS: CupertinoPageTransitionsBuilder(),
+      }),
       snackBarTheme: SnackBarThemeData(
         behavior: SnackBarBehavior.floating,
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),

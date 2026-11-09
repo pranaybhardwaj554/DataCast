@@ -244,3 +244,83 @@ table.files { width: 100%; min-width: 520px; border-collapse: collapse; font-siz
 
 /* Toast */
 .toast { position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%); background: var(--ink); color: var(--paper); padding: 10px 16px; border-radius: 10px; font-size: 14px; z-index: 30; max-width: calc(100% - 32px); }
+
+/* ---------- Motion ----------
+   One set of curves for everything: things arrive with a soft
+   deceleration, leave quickly. Turned off for reduced-motion users. */
+:root {
+  --ease-out: cubic-bezier(.22, 1, .36, 1);
+  --ease-in: cubic-bezier(.4, 0, 1, 1);
+  --t-quick: 160ms;
+  --t-med: 260ms;
+  --t-screen: 360ms;
+}
+@keyframes dc-in { from { opacity: 0; transform: translateY(10px); } }
+@keyframes dc-fade { from { opacity: 0; } }
+@keyframes dc-out { to { opacity: 0; transform: translateY(6px); } }
+@keyframes dc-pop { from { opacity: 0; transform: scale(.96); } }
+@keyframes dc-drop { from { opacity: 0; transform: translateY(-100%); } }
+@keyframes dc-rise { from { opacity: 0; transform: translate(-50%, 16px); } }
+@keyframes dc-sink { to { opacity: 0; transform: translate(-50%, 16px); } }
+@keyframes dc-zoom-in { from { opacity: 0; transform: scale(.9); } }
+@keyframes dc-zoom-out { to { opacity: 0; transform: scale(.94); } }
+@keyframes dc-from-right { from { opacity: 0; transform: translateX(48px); } }
+@keyframes dc-from-left { from { opacity: 0; transform: translateX(-48px); } }
+
+/* Page switches: CSS entrance (the View Transitions API adds a cross-fade where supported). */
+.view:not([hidden]) { animation: dc-in var(--t-screen) var(--ease-out) both; }
+.vt .view:not([hidden]) { animation: none; }
+.topbar { view-transition-name: dc-topbar; }
+::view-transition-group(dc-topbar), ::view-transition-old(dc-topbar), ::view-transition-new(dc-topbar) { animation: none; }
+::view-transition-old(dc-topbar) { display: none; }
+::view-transition-old(root) { animation: dc-fade var(--t-quick) var(--ease-in) reverse both; }
+::view-transition-new(root) { animation: dc-in var(--t-screen) var(--ease-out) both; }
+
+/* Lists: rows and tiles cascade in when a folder opens or the layout changes. */
+.stagger > tr, .stagger > .tile, .device-grid.stagger > .device {
+  animation: dc-in var(--t-med) var(--ease-out) both;
+  animation-delay: calc(var(--i, 0) * 22ms);
+}
+.device-grid.stagger > .device { animation-delay: calc(var(--i, 0) * 50ms); }
+.pin-card, .msg-card { animation: dc-pop var(--t-screen) var(--ease-out) both; }
+
+/* Images fade in as they arrive instead of popping. */
+.fade-img { opacity: 0; transition: opacity var(--t-med) var(--ease-out); }
+.fade-img.loaded { opacity: 1; }
+
+/* Hover and press feedback. */
+.btn, .icon-btn, .seg button, .tile, .device, .fname, .files td, .pin-inputs input, .search {
+  transition: background-color var(--t-quick) var(--ease-out), border-color var(--t-quick) var(--ease-out),
+              color var(--t-quick) var(--ease-out), transform var(--t-quick) var(--ease-out),
+              box-shadow var(--t-quick) var(--ease-out);
+}
+.btn:active, .icon-btn:active, .tile:active, .device:active, .nav-btn:active { transform: scale(.97); }
+.tile:hover { transform: translateY(-2px); }
+.tile .tile-thumb img { transition: transform var(--t-screen) var(--ease-out), opacity var(--t-med) var(--ease-out); }
+.tile:hover .tile-thumb img { transform: scale(1.04); }
+
+/* Preview: grows from the tapped item, shrinks back on close. */
+.preview:not([hidden]) { animation: dc-fade var(--t-med) var(--ease-out) both; }
+.preview:not([hidden]) .pv-stage { transform-origin: var(--ox, 50%) var(--oy, 50%); animation: dc-zoom-in var(--t-screen) var(--ease-out) both; }
+.preview.leaving { animation: dc-fade var(--t-quick) var(--ease-in) reverse both; }
+.preview.leaving .pv-stage { animation: dc-zoom-out var(--t-quick) var(--ease-in) both; }
+.pv-content { transition: transform var(--t-med) var(--ease-out), opacity var(--t-med) var(--ease-out); }
+.pv-content.from-right { animation: dc-from-right var(--t-med) var(--ease-out) both; }
+.pv-content.from-left { animation: dc-from-left var(--t-med) var(--ease-out) both; }
+.nav-btn { transition: opacity var(--t-quick), background-color var(--t-quick), transform var(--t-quick) var(--ease-out); }
+
+/* Bars and toasts. */
+.conn-bar:not([hidden]) { animation: dc-drop var(--t-med) var(--ease-out) both; }
+.conn-bar.leaving { animation: dc-drop var(--t-quick) var(--ease-in) reverse both; }
+.toast:not([hidden]) { animation: dc-rise var(--t-med) var(--ease-out) both; }
+.toast.leaving { animation: dc-sink var(--t-quick) var(--ease-in) both; }
+.error:not([hidden]) { animation: dc-in var(--t-med) var(--ease-out) both; }
+details.help[open] p { animation: dc-in var(--t-med) var(--ease-out) both; }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after, ::view-transition-old(root), ::view-transition-new(root) {
+    animation-duration: 1ms !important; animation-delay: 0ms !important;
+    transition-duration: 1ms !important;
+  }
+  .fade-img { opacity: 1; }
+}
