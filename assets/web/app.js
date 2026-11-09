@@ -74,6 +74,8 @@
   }
   function rawUrl(p) { return '/api/raw?path=' + q(p); }
   function downloadUrl(p) { return '/api/download?path=' + q(p); }
+  function zipUrl(p) { return '/api/zip?path=' + q(p); }
+  function canZip() { return !!(state.info && state.info.allowZip); }
 
   // ---------- helpers ----------
   function el(tag, attrs, children) {
@@ -472,7 +474,7 @@
         ])
       ]);
       var dl = e.isDir
-        ? (state.info && state.info.allowZip ? el('a', { class: 'icon-btn', href: '/api/zip?path=' + q(p), 'aria-label': 'Download ' + e.name + ' as zip' }, [icon('download', 16)]) : null)
+        ? (canZip() ? el('a', { class: 'icon-btn', href: zipUrl(p), download: true, title: 'Download folder (.zip)', 'aria-label': 'Download ' + e.name + ' as zip' }, [icon('download', 16)]) : null)
         : el('a', { class: 'icon-btn', href: downloadUrl(p), download: e.name, 'aria-label': 'Download ' + e.name }, [icon('download', 16)]);
       rows.appendChild(el('tr', { style: '--i:' + Math.min(idx, 14) }, [
         el('td', null, [nameBtn]),
@@ -489,8 +491,16 @@
         thumb.appendChild(el('span', { class: 'play-badge', 'aria-hidden': 'true' }, [icon('vid', 14)]));
       }
       else thumb.appendChild(bigIcon());
-      grid.appendChild(el('button', { type: 'button', class: 'tile', title: e.name, style: '--i:' + Math.min(idx, 18), onclick: function (ev) { originFrom(ev.currentTarget); activate(e, list); } }, [
-        thumb, el('span', { class: 'tile-label', text: e.name })
+      // The tile opens the item; folders also get a zip link in the corner
+      // (a sibling, since a link can't sit inside a button).
+      var tileDl = e.isDir && canZip()
+        ? el('a', { class: 'tile-dl', href: zipUrl(p), download: true, title: 'Download folder (.zip)', 'aria-label': 'Download ' + e.name + ' as zip' }, [icon('download', 16)])
+        : null;
+      grid.appendChild(el('div', { class: 'tile-wrap', style: '--i:' + Math.min(idx, 18) }, [
+        el('button', { type: 'button', class: 'tile', title: e.name, onclick: function (ev) { originFrom(ev.currentTarget); activate(e, list); } }, [
+          thumb, el('span', { class: 'tile-label', text: e.name })
+        ]),
+        tileDl
       ]));
     });
     var isGrid = state.layout === 'grid';
@@ -516,8 +526,14 @@
       show('view-files');
       $('brand-name').textContent = (state.info && state.info.name) || 'DataCast';
       var zip = $('zip-btn');
-      zip.hidden = !(state.info && state.info.allowZip && state.entries.length);
-      zip.href = '/api/zip?path=' + q(state.path);
+      // Whole-folder download. In files mode the root is the picked set.
+      var label = state.info && state.info.mode === 'files' && state.path === '/' ? 'Download all (.zip)' : 'Download folder (.zip)';
+      zip.hidden = !(canZip() && state.entries.length);
+      zip.href = zipUrl(state.path);
+      zip.setAttribute('download', '');
+      zip.setAttribute('aria-label', label.replace(' (.zip)', ' as zip'));
+      zip.title = label;
+      zip.querySelector('.zip-label').textContent = label;
       renderCrumbs(state.path);
       renderFiles(true);
     }).catch(offline);
