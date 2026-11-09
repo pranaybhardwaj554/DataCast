@@ -154,14 +154,10 @@
   // ---------- views ----------
   var VIEWS = ['view-devices', 'view-pin', 'view-files', 'view-message'];
   var currentView = null;
-  function show(id) {
-    if (id !== currentView && document.startViewTransition && !reduceMotion && currentView) {
-      // Native cross-fade between the old and new page (Chrome, Edge, Safari 18+).
-      document.documentElement.classList.add('vt');
-      var vt = document.startViewTransition(function () { swapView(id); });
-      vt.finished.then(function () { document.documentElement.classList.remove('vt'); }, function () {});
-    } else swapView(id);
-  }
+  // Page changes swap synchronously; the entrance is a plain CSS animation.
+  // (The View Transitions API was dropped: Safari could leave the old page's
+  // snapshot on screen, so links like "All devices" looked dead.)
+  function show(id) { swapView(id); }
   function swapView(id) {
     currentView = id;
     VIEWS.forEach(function (v) { $(v).hidden = v !== id; });
@@ -363,6 +359,10 @@
     })();
   }
   $('pin-form').addEventListener('submit', submitPin);
+  // "All devices" must always work, even if the address already says #/devices.
+  document.querySelector('#view-pin .back').addEventListener('click', function (ev) {
+    if (location.hash === '#/devices') { ev.preventDefault(); route(); }
+  });
   function openPin() {
     show('view-pin');
     $('pin-device-name').textContent = (state.info && state.info.name) || 'This device';
