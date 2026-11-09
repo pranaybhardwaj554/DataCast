@@ -41,6 +41,7 @@ class SharingController extends ChangeNotifier {
   Timer? _networkTimer;
   AppLifecycleListener? _lifecycle;
   int _missedNetworkChecks = 0;
+  int _lastClientCount = 0;
   bool _busy = false;
 
   // ------------------------------------------------------------------- state
@@ -381,6 +382,13 @@ class SharingController extends ChangeNotifier {
 
   /// Re-checks Wi-Fi (and, while sharing, access to the shared items).
   Future<void> refreshNetwork() async {
+    // Runs every 5 s: also lets the "connected" count drop when a browser
+    // simply goes away (no request marks that moment).
+    final clients = _auth.connectedClients;
+    if (clients != _lastClientCount) {
+      _lastClientCount = clients;
+      notifyListeners();
+    }
     if (_busy) return;
     final ip = await findLocalIpv4();
     final had = _hasNetwork;

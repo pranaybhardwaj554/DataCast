@@ -148,11 +148,19 @@ void main() {
     expect((await http.get(base.resolve('/missing.js'))).statusCode, 404);
   });
 
-  test('connected clients counts recent tokens', () async {
+  test('connected clients: distinct, heartbeat, logout', () async {
     await login();
+    final token = await login(); // same browser unlocking again counts once
     expect(auth.connectedClients, 1);
-    now = now.add(const Duration(minutes: 3));
+    now = now.add(const Duration(seconds: 20)); // page went away
     expect(auth.connectedClients, 0);
+    final authz = {'authorization': 'Bearer $token'};
+    await http.get(base.resolve('/api/info'), headers: authz); // heartbeat
+    expect(auth.connectedClients, 1);
+    await http.post(base.resolve('/api/logout'), headers: authz); // switched device
+    expect(auth.connectedClients, 0);
+    final files = await http.get(base.replace(path: '/api/files', queryParameters: {'path': '/'}), headers: authz);
+    expect(files.statusCode, 401);
   });
 
   test('zip download is a valid archive', () async {

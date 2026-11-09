@@ -133,7 +133,7 @@ class DataCastServer {
       };
 
   Handler _guard(FutureOr<Response> Function(Request) h) => (request) {
-    if (!auth.validate(_token(request))) {
+    if (!auth.validate(_token(request), _clientKey(request))) {
       return _json({'error': 'PIN required'}, 401);
     }
     if (source() == null) {
@@ -151,7 +151,7 @@ class DataCastServer {
       'deviceId': id.deviceId,
       'platform': id.platform,
       'requiresPin': true,
-      'authenticated': auth.validate(_token(r)),
+      'authenticated': auth.validate(_token(r), _clientKey(r)),
       'sharing': source() != null,
       'folderName': source()?.displayName,
       'allowZip': allowZip(),
@@ -203,8 +203,10 @@ class DataCastServer {
     }
   }
 
-  Response _logout(Request r) =>
-      _json({'ok': true}, 200, {'set-cookie': '$_cookieName=; Path=/; Max-Age=0; HttpOnly; SameSite=Strict'});
+  Response _logout(Request r) {
+    auth.revoke(_token(r));
+    return _json({'ok': true}, 200, {'set-cookie': '$_cookieName=; Path=/; Max-Age=0; HttpOnly; SameSite=Strict'});
+  }
 
   Future<Response> _files(Request r) async {
     final path = normalizeSharePath(r.url.queryParameters['path']);
