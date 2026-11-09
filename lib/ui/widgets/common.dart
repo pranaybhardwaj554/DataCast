@@ -1,3 +1,5 @@
+import 'dart:math' as math;
+
 import 'package:flutter/material.dart';
 
 import '../theme/app_theme.dart';
@@ -14,21 +16,54 @@ class SectionLabel extends StatelessWidget {
       );
 }
 
-/// The DataCast mark: rounded square with a broadcast glyph.
+/// The DataCast mark, drawn to match the launcher icon and the web logo
+/// exactly (assets/brand/datacast-icon.svg): a #3B5BFD rounded square
+/// with the white broadcast glyph.
 class BrandMark extends StatelessWidget {
   const BrandMark({super.key, this.size = 36});
   final double size;
 
   @override
-  Widget build(BuildContext context) => Container(
-        width: size,
-        height: size,
-        decoration: BoxDecoration(
-          color: DcColors.accent,
-          borderRadius: BorderRadius.circular(size * 0.28),
-        ),
-        child: Icon(Icons.wifi_tethering_rounded, color: Colors.white, size: size * 0.58),
+  Widget build(BuildContext context) => Semantics(
+        label: 'DataCast',
+        image: true,
+        child: CustomPaint(size: Size.square(size), painter: const _BrandMarkPainter()),
       );
+}
+
+class _BrandMarkPainter extends CustomPainter {
+  const _BrandMarkPainter();
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    // The icon SVG is a 96 box with rx 22; the 24-unit glyph is scaled by
+    // 2.73 and its point (12, 11.05) sits at the centre.
+    final box = size.width / 96;
+    canvas.drawRRect(
+      RRect.fromRectAndRadius(Offset.zero & size, Radius.circular(22 * box)),
+      Paint()..color = DcColors.accent,
+    );
+    canvas.save();
+    canvas.translate(size.width / 2, size.height / 2);
+    canvas.scale(2.73 * box);
+    canvas.translate(-12, -11.05);
+    // The glyph's two arcs are 2-unit-thick half rings with round ends
+    // (outer r 6 to 8, inner r 2.5 to 4.5, centred at 12, 12.5), which is
+    // a round-capped stroke along the middle radius.
+    final arc = Paint()
+      ..color = Colors.white
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 2
+      ..strokeCap = StrokeCap.round;
+    const c = Offset(12, 12.5);
+    canvas.drawArc(Rect.fromCircle(center: c, radius: 7), math.pi, math.pi, false, arc);
+    canvas.drawArc(Rect.fromCircle(center: c, radius: 3.5), math.pi, math.pi, false, arc);
+    canvas.drawCircle(const Offset(12, 16), 1.6, Paint()..color = Colors.white);
+    canvas.restore();
+  }
+
+  @override
+  bool shouldRepaint(_BrandMarkPainter oldDelegate) => false;
 }
 
 /// Green pill with a pulsing dot, shown while sharing.

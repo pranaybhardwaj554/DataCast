@@ -79,7 +79,9 @@ button, input { font: inherit; color: inherit; }
 .topbar-inner { display: flex; align-items: center; gap: 12px; min-height: 60px; }
 .brand { display: flex; align-items: center; gap: 10px; text-decoration: none; color: var(--ink); min-width: 0; }
 .brand:hover { color: var(--ink); }
-.brand-mark { width: 32px; height: 32px; border-radius: 9px; background: #3B5BFD; display: grid; place-items: center; flex-shrink: 0; }
+/* Same artwork as the app icon (assets/brand/datacast-icon.svg). */
+.brand-mark { width: 32px; height: 32px; display: block; flex-shrink: 0; }
+.brand-mark svg { display: block; }
 .brand-text { display: flex; flex-direction: column; min-width: 0; }
 .brand-name { font-family: var(--font-display); font-weight: 700; font-size: 18px; letter-spacing: -0.02em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .brand-status { font-size: 12px; color: var(--live-ink); display: flex; align-items: center; gap: 5px; }
