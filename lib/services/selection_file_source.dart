@@ -83,6 +83,13 @@ class SelectionFileSource extends FileSource {
   SharedFile? _fileFor(String path) => path.lastIndexOf('/') == 0 ? _byName[path.substring(1)] : null;
 
   @override
+  Future<List<int>?> thumbnail(String path, int size) async {
+    final f = _fileFor(path);
+    if (f == null || !_isContent(f.uri)) return null;
+    return _bridge.docThumbnail(f.uri, size);
+  }
+
+  @override
   Stream<List<int>> read(String path, {int start = 0, int? end}) {
     final f = _fileFor(path);
     if (f == null) throw FileNotFound(path);

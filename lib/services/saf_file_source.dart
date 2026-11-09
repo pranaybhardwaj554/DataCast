@@ -48,6 +48,9 @@ class SafFileSource extends FileSource {
   }
 
   @override
+  Future<List<int>?> thumbnail(String path, int size) => _bridge.thumbnail(treeUri, path, size);
+
+  @override
   Stream<List<int>> read(String path, {int start = 0, int? end}) => readDescriptor(
     bridge: _bridge,
     open: () => _bridge.openFd(treeUri, path),

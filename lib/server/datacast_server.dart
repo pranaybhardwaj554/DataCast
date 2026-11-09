@@ -104,6 +104,7 @@ class DataCastServer {
     ..get('/api/raw', _guard((r) => _sendFile(r, attachment: false)))
     ..head('/api/raw', _guard((r) => _sendFile(r, attachment: false)))
     ..get('/api/zip', _guard(_zip))
+    ..get('/api/thumb', _guard(_thumb))
     ..all('/api/<ignored|.*>', (Request r) => _json({'error': 'Unknown endpoint'}, 404));
 
   // ---------------------------------------------------------------- middleware
@@ -154,6 +155,7 @@ class DataCastServer {
       'sharing': source() != null,
       'folderName': source()?.displayName,
       'allowZip': allowZip(),
+      'thumbs': true,
       'mode': mode(),
       'apiVersion': apiVersion,
     });
@@ -254,6 +256,42 @@ class DataCastServer {
       );
     }
     return Response.ok(isHead || size == 0 ? null : src.read(path), headers: {...headers, 'content-length': '$size'});
+  }
+
+  static const thumbSizes = [128, 256, 512];
+  final _thumbSlots = _Semaphore(3);
+
+  Future<Response> _thumb(Request r) async {
+    final path = normalizeSharePath(r.url.queryParameters['path']);
+    final size = int.tryParse(r.url.queryParameters['size'] ?? '') ?? 256;
+    if (!thumbSizes.contains(size)) {
+      return _json({'error': 'size must be one of $thumbSizes'}, 400);
+    }
+    final src = source()!;
+    final entry = await src.stat(path);
+    if (entry == null) throw FileNotFound(path);
+    final mime = entry.mime ?? lookupMimeType(entry.name) ?? '';
+    if (entry.isDir || !(mime.startsWith('image/') || mime.startsWith('video/'))) {
+      return _json({'error': 'No thumbnail for this file type'}, 415);
+    }
+    final etag =
+        '"${Object.hash(path, entry.modified?.millisecondsSinceEpoch, entry.size, size).toUnsigned(32).toRadixString(16)}"';
+    final cacheHeaders = {'etag': etag, 'cache-control': 'private, max-age=86400'};
+    if (r.headers['if-none-match'] == etag) return Response.notModified(headers: cacheHeaders);
+
+    List<int>? bytes;
+    try {
+      bytes = await _thumbSlots.run(() => src.thumbnail(path, size));
+    } catch (_) {
+      bytes = null; // decoder failed on this file
+    }
+    if (bytes == null || bytes.isEmpty) {
+      return _json({'error': 'No thumbnail for this file'}, 415);
+    }
+    return Response.ok(
+      bytes,
+      headers: {...cacheHeaders, 'content-type': 'image/jpeg', 'content-length': '${bytes.length}'},
+    );
   }
 
   Future<Response> _zip(Request r) async {
@@ -380,4 +418,27 @@ ByteRange? parseRange(String? header, int size) {
   }
   if (size == 0 || start >= size || start > end) return RangeResult.unsatisfiable;
   return ByteRange(start, end);
+}
+
+/// Limits how many thumbnails are generated at once.
+class _Semaphore {
+  _Semaphore(this._max);
+  final int _max;
+  int _running = 0;
+  final _waiters = <Completer<void>>[];
+
+  Future<T> run<T>(Future<T> Function() task) async {
+    if (_running >= _max) {
+      final c = Completer<void>();
+      _waiters.add(c);
+      await c.future;
+    }
+    _running++;
+    try {
+      return await task();
+    } finally {
+      _running--;
+      if (_waiters.isNotEmpty) _waiters.removeAt(0).complete();
+    }
+  }
 }

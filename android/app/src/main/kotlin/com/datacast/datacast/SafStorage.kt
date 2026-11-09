@@ -18,6 +18,17 @@ import java.util.concurrent.ConcurrentHashMap
 class SafStorage(private val context: Context) {
     private val resolver get() = context.contentResolver
     private val idCache = ConcurrentHashMap<String, String>()
+    private val thumbs = Thumbnails(context)
+
+    fun thumbnail(tree: Uri, path: String, px: Int): ByteArray? {
+        val id = resolve(tree, path) ?: return null
+        return docThumbnail(DocumentsContract.buildDocumentUriUsingTree(tree, id), px)
+    }
+
+    fun docThumbnail(doc: Uri, px: Int): ByteArray? {
+        val stat = docStat(doc) ?: return null
+        return thumbs.get(doc, stat, px)
+    }
 
     fun takePermission(tree: Uri) {
         resolver.takePersistableUriPermission(tree, Intent.FLAG_GRANT_READ_URI_PERMISSION)

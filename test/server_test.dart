@@ -185,6 +185,30 @@ void main() {
     expect(parseRange('bytes=-5', 10), const ByteRange(5, 9));
   });
 
+  test('thumbnails: 415 for unsupported, 400 for bad size', () async {
+    final token = await login();
+    final h = {'authorization': 'Bearer $token'};
+    var r = await http.get(
+      base.replace(path: '/api/thumb', queryParameters: {'path': '/hello.txt'}),
+      headers: h,
+    );
+    expect(r.statusCode, 415);
+    // IoFileSource has no decoder, so even images fall back to 415.
+    r = await http.get(
+      base.replace(path: '/api/thumb', queryParameters: {'path': '/Photos/a b ü.jpg'}),
+      headers: h,
+    );
+    expect(r.statusCode, 415);
+    r = await http.get(
+      base.replace(path: '/api/thumb', queryParameters: {'path': '/Photos/a b ü.jpg', 'size': '99'}),
+      headers: h,
+    );
+    expect(r.statusCode, 400);
+    final info = jsonDecode((await http.get(base.resolve('/api/info'))).body);
+    expect(info['thumbs'], true);
+  });
+
+  // Runs last: it initializes the Flutter test binding, which blocks real HTTP.
   test('selected files are served as a flat folder', () async {
     TestWidgetsFlutterBinding.ensureInitialized();
     final a = File('${tmp.path}/hello.txt');

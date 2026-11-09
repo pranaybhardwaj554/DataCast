@@ -31,6 +31,10 @@ abstract class FileSource {
   /// Streams bytes [start, end] (end inclusive) of a file.
   Stream<List<int>> read(String path, {int start = 0, int? end});
 
+  /// A JPEG thumbnail whose longest side is [size] pixels, or null when this
+  /// file type (or this source) can't be thumbnailed.
+  Future<List<int>?> thumbnail(String path, int size) async => null;
+
   Future<void> dispose() async {}
 }
 

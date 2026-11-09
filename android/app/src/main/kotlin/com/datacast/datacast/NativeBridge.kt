@@ -49,6 +49,12 @@ class NativeBridge(private val context: Context, messenger: BinaryMessenger) :
         when (call.method) {
             "pickFolder" -> pickFolder(result)
             "pickFiles" -> pickFiles(result)
+            "thumbnail" -> background(result) {
+                storage.thumbnail(uriArg(call), pathArg(call), call.argument<Int>("size") ?: 256)
+            }
+            "docThumbnail" -> background(result) {
+                storage.docThumbnail(uriArg(call), call.argument<Int>("size") ?: 256)
+            }
             "hasDocAccess" -> background(result) { storage.hasDocAccess(uriArg(call)) }
             "docStat" -> background(result) { storage.docStat(uriArg(call)) }
             "docOpenFd" -> background(result) { storage.docOpenFd(uriArg(call)) }

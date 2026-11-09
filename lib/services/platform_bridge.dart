@@ -55,6 +55,14 @@ class PlatformBridge {
       await _channel.invokeMethod<Uint8List>('docReadChunk', {'uri': uri, 'offset': offset, 'length': length}) ??
       Uint8List(0);
 
+  /// JPEG thumbnail of a file inside a picked folder (cached natively).
+  Future<Uint8List?> thumbnail(String treeUri, String path, int size) =>
+      _channel.invokeMethod<Uint8List>('thumbnail', {'uri': treeUri, 'path': path, 'size': size});
+
+  /// JPEG thumbnail of an individually picked file (cached natively).
+  Future<Uint8List?> docThumbnail(String uri, int size) =>
+      _channel.invokeMethod<Uint8List>('docThumbnail', {'uri': uri, 'size': size});
+
   /// Whether the app still has read access to a previously picked folder.
   Future<bool> hasFolderAccess(String uri) async =>
       await _channel.invokeMethod<bool>('hasFolderAccess', {'uri': uri}) ?? false;
