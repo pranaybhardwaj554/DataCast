@@ -370,6 +370,34 @@
     if (k === 'other') { window.location.href = downloadUrl(entryPath(e)); return; }
     openPreview(e, list);
   }
+  // Thumbnails: small resized JPEGs from /api/thumb when the phone offers
+  // them, else the full image. Falls back to the file icon if neither loads.
+  function thumbUrl(p, size) {
+    return state.info && state.info.thumbs ? '/api/thumb?path=' + q(p) + '&size=' + size : rawUrl(p);
+  }
+  function thumbImg(p, size, fallback) {
+    var img = el('img', { src: thumbUrl(p, size), alt: '', loading: 'lazy', decoding: 'async' });
+    img.addEventListener('error', function () {
+      if (img.dataset.triedRaw !== '1' && state.info && state.info.thumbs) {
+        img.dataset.triedRaw = '1';
+        img.src = rawUrl(p); // e.g. 415 for a format the phone can't shrink
+      } else if (img.parentNode) {
+        img.parentNode.replaceChild(fallback(), img);
+      }
+    });
+    return img;
+  }
+  function listIcon(e, k, p) {
+    var plain = function () { return el('span', { class: 'ficon ' + iconKind(k) }, [icon(iconKind(k))]); };
+    // Only use real thumbnails in the list; full images would be too heavy.
+    if (k !== 'img' || !(state.info && state.info.thumbs)) return plain();
+    var box = el('span', { class: 'ficon img has-thumb' });
+    var img = el('img', { src: thumbUrl(p, 128), alt: '', loading: 'lazy', decoding: 'async' });
+    img.addEventListener('error', function () { if (box.parentNode) box.parentNode.replaceChild(plain(), box); });
+    box.appendChild(img);
+    return box;
+  }
+
   function renderFiles() {
     var list = visibleEntries();
     var rows = $('file-rows'), grid = $('grid-box');
@@ -377,7 +405,7 @@
     list.forEach(function (e) {
       var k = kindOf(e), p = entryPath(e);
       var nameBtn = el('button', { type: 'button', class: 'fname', onclick: function () { activate(e, list); } }, [
-        el('span', { class: 'ficon ' + iconKind(k) }, [icon(iconKind(k))]),
+        listIcon(e, k, p),
         el('span', { class: 'fname-text' }, [
           el('span', { text: e.name }),
           el('span', { class: 'fmeta', text: e.isDir ? 'Folder' : fmtSize(e.size) + ' · ' + fmtDate(e.modified) })
@@ -393,8 +421,9 @@
         el('td', null, [dl])
       ]));
       var thumb = el('span', { class: 'tile-thumb' });
-      if (k === 'img') thumb.appendChild(el('img', { src: rawUrl(p), alt: '', loading: 'lazy', decoding: 'async' }));
-      else thumb.appendChild(el('span', { class: 'ficon ' + iconKind(k) }, [icon(iconKind(k), 26)]));
+      var bigIcon = function () { return el('span', { class: 'ficon ' + iconKind(k) }, [icon(iconKind(k), 26)]); };
+      if (k === 'img') thumb.appendChild(thumbImg(p, window.devicePixelRatio > 1.5 ? 512 : 256, bigIcon));
+      else thumb.appendChild(bigIcon());
       grid.appendChild(el('button', { type: 'button', class: 'tile', title: e.name, onclick: function () { activate(e, list); } }, [
         thumb, el('span', { class: 'tile-label', text: e.name })
       ]));
