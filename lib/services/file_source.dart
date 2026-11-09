@@ -16,8 +16,9 @@ class FileNotFound implements Exception {
 /// Read-only view of the shared folder.
 ///
 /// Paths are always normalized share paths (`/`, `/a/b.txt`). Implementations:
-/// [IoFileSource] for a normal filesystem folder (tests, desktop, iOS) and
-/// `SafFileSource` for an Android folder picked through the system picker.
+/// [IoFileSource] for a normal filesystem folder (tests, desktop),
+/// `SafFileSource` for an Android folder picked through the system picker and
+/// `BookmarkFileSource` for an iOS folder picked in the Files picker.
 abstract class FileSource {
   /// Human readable name of the shared folder.
   String get displayName;

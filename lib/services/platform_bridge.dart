@@ -9,10 +9,21 @@ class PickedFolder {
   final String name;
 }
 
-/// Dart side of the native Android code in `android/app/src/main/kotlin`.
+/// Prefix of the URIs the iOS side returns for picked folders and files: a
+/// base64 security-scoped bookmark, resolved natively with [PlatformBridge.resolveBookmark].
+const iosBookmarkPrefix = 'ios-bookmark:';
+
+/// Whether [uri] must go through native code to be read: an Android
+/// `content://` URI or an iOS bookmark. Anything else is a plain path.
+bool isNativeUri(String uri) => uri.startsWith('content://') || uri.startsWith(iosBookmarkPrefix);
+
+/// Dart side of the native code in `android/app/src/main/kotlin` and
+/// `ios/Runner/NativeBridge.swift`.
 ///
 /// One method channel covers the folder picker, Storage Access Framework
-/// reads, the foreground service and device info.
+/// reads, the foreground service and device info. On iOS only the pickers,
+/// access checks, thumbnails, [resolveBookmark] and the screen/idle methods do
+/// anything; files are then read with `dart:io`.
 class PlatformBridge {
   PlatformBridge({MethodChannel? channel}) : _channel = channel ?? const MethodChannel('datacast/native') {
     _channel.setMethodCallHandler(_onNativeCall);
@@ -63,12 +74,19 @@ class PlatformBridge {
   Future<Uint8List?> docThumbnail(String uri, int size) =>
       _channel.invokeMethod<Uint8List>('docThumbnail', {'uri': uri, 'size': size});
 
+  /// iOS: resolves an [iosBookmarkPrefix] URI, starts security-scoped access
+  /// for the rest of the app's life and returns the file or folder path, or
+  /// null if it is gone.
+  Future<String?> resolveBookmark(String uri) => _channel.invokeMethod<String>('resolveBookmark', {'uri': uri});
+
   /// Whether the app still has read access to a previously picked folder.
   Future<bool> hasFolderAccess(String uri) async =>
       await _channel.invokeMethod<bool>('hasFolderAccess', {'uri': uri}) ?? false;
 
-  Future<String> deviceName() async => await _channel.invokeMethod<String>('deviceName') ?? 'Android device';
+  Future<String> deviceName() async => await _channel.invokeMethod<String>('deviceName') ?? 'DataCast device';
 
+  /// Android: shows the sharing notification. iOS: marks sharing as active so
+  /// a quick app switch gets a short background grace period.
   Future<void> startForegroundService({required String text}) => _channel.invokeMethod('startService', {'text': text});
 
   /// Keeps the screen from turning off while the app is visible.
