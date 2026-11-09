@@ -28,5 +28,6 @@ Then tap Choose to pick a folder and Start sharing. Open the URL shown on anothe
 
 ## Notes
 
-- Android: sharing continues with the app closed, through a foreground service with a Stop button in the notification. It uses the `dataSync` service type, which Android 15 limits to 6 hours a day.
+- Android: sharing continues with the app closed, through a foreground service with a Stop button in the notification. It uses the `connectedDevice` service type, which has no daily time limit.
 - iOS: not wired up yet. iOS only allows the server while the app is open on screen.
+- Play Store release: signing, store listing, privacy policy and Play Console answers are in `docs/play-store/` (start with `RELEASE.md`).

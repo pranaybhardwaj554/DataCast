@@ -32,7 +32,7 @@ class SharingService : Service() {
         val text = intent?.getStringExtra(EXTRA_TEXT) ?: ""
         val notification = buildNotification(text)
         if (Build.VERSION.SDK_INT >= 29) {
-            startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
+            startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE)
         } else {
             startForeground(NOTIFICATION_ID, notification)
         }
@@ -40,7 +40,8 @@ class SharingService : Service() {
         return START_NOT_STICKY
     }
 
-    // Android 15+ limits dataSync services to 6 hours a day.
+    // connectedDevice has no time limit, so this should not fire. Kept so the
+    // service stops cleanly if the type ever changes to one with a limit.
     override fun onTimeout(startId: Int, fgsType: Int) {
         NativeBridge.instance?.notifyStopRequested()
         stopSelf()
@@ -90,7 +91,7 @@ class SharingService : Service() {
         val builder = if (Build.VERSION.SDK_INT >= 26) Notification.Builder(this, CHANNEL_ID)
         else @Suppress("DEPRECATION") Notification.Builder(this)
         return builder
-            .setSmallIcon(R.mipmap.ic_launcher)
+            .setSmallIcon(R.drawable.ic_stat_datacast)
             .setContentTitle("DataCast is sharing")
             .setContentText(text)
             .setOngoing(true)
