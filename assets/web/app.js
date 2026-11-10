@@ -65,6 +65,7 @@
   function signOut() {
     var token = safeGet(TOKEN_KEY);
     safeDel(TOKEN_KEY);
+    setUnlocked(false);
     try {
       if (token && window.fetch) {
         fetch('/api/logout', { method: 'POST', keepalive: true, credentials: 'same-origin', headers: { Authorization: 'Bearer ' + token } }).catch(function () {});
@@ -102,7 +103,8 @@
     download: '<path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 21h14"/>',
     phone: '<rect x="6" y="2.5" width="12" height="19" rx="2.5"/><path d="M11 18.5h2"/>',
     tablet: '<rect x="4" y="2.5" width="16" height="19" rx="2.5"/><path d="M11 18.5h2"/>',
-    lock: '<rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/>'
+    lock: '<rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/>',
+    check: '<path d="m5 12.5 4.5 4.5L19 7.5"/>'
   };
   function icon(name, size) {
     var s = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
@@ -270,10 +272,18 @@
       $('devices-count').textContent = 'Searching…';
       return;
     }
-    $('devices-count').textContent = list.length + ' found';
+    // The phone serving this page is always in the list so a new visitor can
+    // unlock it. Once this browser is already signed in to it, it is the
+    // current device: no PIN, and tapping it just goes back to the files.
+    var unlocked = isUnlocked();
+    var others = list.filter(function (d) { return !d.self; }).length;
+    $('devices-count').textContent = !unlocked ? list.length + ' found'
+      : others ? others + ' other device' + (others === 1 ? '' : 's') + ' found'
+      : 'No other devices found yet';
     list.sort(function (a, b) { return (b.self ? 1 : 0) - (a.self ? 1 : 0) || String(a.name).localeCompare(b.name); });
     list.forEach(function (d) {
       var isTablet = /ipad|tablet/i.test(d.platform || '') || /ipad/i.test(d.name || '');
+      var current = d.self && unlocked;
       var card = el('button', { type: 'button', class: 'device' + (d.self ? ' self' : ''), onclick: function () { pickDevice(d); } }, [
         el('div', { class: 'device-top' }, [
           el('span', { class: 'device-icon' }, [icon(isTablet ? 'tablet' : 'phone', 22)]),
@@ -283,8 +293,10 @@
           ])
         ]),
         el('div', { class: 'device-foot' }, [
-          el('span', { class: 'device-lock' }, [icon('lock', 14), 'PIN required']),
-          el('span', { class: 'tag', text: d.self ? 'This one' : 'Open' })
+          current
+            ? el('span', { class: 'device-lock' }, [icon('check', 14), 'Connected'])
+            : el('span', { class: 'device-lock' }, [icon('lock', 14), 'PIN required']),
+          el('span', { class: 'tag', text: current ? 'Current' : d.self ? 'This one' : 'Open' })
         ])
       ]);
       card.style.setProperty('--i', Math.min(grid.children.length, 12));
@@ -316,14 +328,23 @@
       : "This phone isn't reachable, so it can't list other devices. Open another phone's address directly.";
   }
   function pickDevice(d) {
-    if (d.self) { location.hash = '#/pin'; return; }
+    if (d.self) { location.hash = isUnlocked() ? '#/files/' : '#/pin'; return; }
     var host = String(d.ip).indexOf(':') >= 0 ? '[' + d.ip + ']' : d.ip;
     signOut();
     location.href = 'http://' + host + ':' + (d.port || 8080) + '/#/pin';
   }
+  function isUnlocked() {
+    return !!(state.info && (state.info.authenticated || state.info.requiresPin === false));
+  }
+  function setUnlocked(on) { if (state.info) state.info.authenticated = on; }
   function openDevices() {
     show('view-devices');
-    loadDevices(true);
+    // Re-check whether this browser is signed in before drawing the list, so
+    // the phone you are on shows as Current instead of asking for its PIN.
+    var grid = $('device-grid'); grid.textContent = '';
+    for (var i = 0; i < 3; i++) grid.appendChild(el('div', { class: 'skeleton', 'aria-hidden': 'true' }));
+    api('/api/info').then(function (r) { if (r.ok) state.info = r.data; }, function () {})
+      .then(function () { if (currentView === 'view-devices') loadDevices(true); });
     state.devicesTimer = setInterval(function () { loadDevices(false); }, 5000);
   }
 
@@ -366,6 +387,7 @@
     api('/api/auth', { method: 'POST', json: { pin: pin } }).then(function (r) {
       if (r.ok) {
         if (r.data.token) safeSet(TOKEN_KEY, r.data.token);
+        setUnlocked(true);
         redirect('#/files/');
         return;
       }
