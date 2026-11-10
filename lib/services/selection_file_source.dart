@@ -34,6 +34,11 @@ class SelectionFileSource extends FileSource {
   }
 
   static bool _isContent(String uri) => uri.startsWith('content://');
+  static bool _isBookmark(String uri) => uri.startsWith(iosBookmarkPrefix);
+
+  /// Filesystem path of a non-`content://` file: the path itself, or an iOS
+  /// bookmark resolved natively (null if the file is gone).
+  Future<String?> _pathOf(SharedFile f) => _isBookmark(f.uri) ? _bridge.resolveBookmark(f.uri) : Future.value(f.uri);
 
   Future<FileEntry?> _entry(String name, SharedFile f) async {
     if (_isContent(f.uri)) {
@@ -49,7 +54,9 @@ class SelectionFileSource extends FileSource {
         mime: guessMime(name) ?? m['mime'] as String? ?? f.mime,
       );
     }
-    final file = File(f.uri);
+    final p = await _pathOf(f);
+    if (p == null) return null;
+    final file = File(p);
     if (!await file.exists()) return null;
     final st = await file.stat();
     return FileEntry(
@@ -85,7 +92,7 @@ class SelectionFileSource extends FileSource {
   @override
   Future<List<int>?> thumbnail(String path, int size) async {
     final f = _fileFor(path);
-    if (f == null || !_isContent(f.uri)) return null;
+    if (f == null || !isNativeUri(f.uri)) return null;
     return _bridge.docThumbnail(f.uri, size);
   }
 
@@ -94,7 +101,10 @@ class SelectionFileSource extends FileSource {
     final f = _fileFor(path);
     if (f == null) throw FileNotFound(path);
     if (!_isContent(f.uri)) {
-      return File(f.uri).openRead(start, end == null ? null : end + 1);
+      return Stream.fromFuture(_pathOf(f)).asyncExpand((p) {
+        if (p == null) throw FileNotFound(path);
+        return File(p).openRead(start, end == null ? null : end + 1);
+      });
     }
     return readDescriptor(
       bridge: _bridge,

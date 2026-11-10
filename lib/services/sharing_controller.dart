@@ -9,6 +9,7 @@ import '../models/peer_device.dart';
 import '../models/shared_file.dart';
 import '../server/datacast_server.dart';
 import '../server/pin_auth.dart';
+import 'bookmark_file_source.dart';
 import 'discovery_service.dart';
 import 'file_source.dart';
 import 'network_utils.dart';
@@ -163,7 +164,7 @@ class SharingController extends ChangeNotifier {
     }
     _hasNetwork = await findLocalIpv4() != null;
     _networkTimer = Timer.periodic(const Duration(seconds: 5), (_) => unawaited(refreshNetwork()));
-    _lifecycle = AppLifecycleListener(onResume: () => unawaited(refreshNetwork()));
+    _lifecycle = AppLifecycleListener(onResume: () => unawaited(_onResume()));
     _initialized = true;
     notifyListeners();
   }
@@ -241,7 +242,7 @@ class SharingController extends ChangeNotifier {
       _server = server;
       _url = 'http://$ip:$port';
       _error = null;
-      if (Platform.isAndroid) {
+      if (Platform.isAndroid || Platform.isIOS) {
         await bridge.startForegroundService(text: 'Open $_url · PIN ${_auth.pin}');
       }
       try {
@@ -325,12 +326,12 @@ class SharingController extends ChangeNotifier {
   /// Drops anything the app can no longer read. Returns false (with an
   /// error set) if nothing is left to share.
   Future<bool> _checkAccess() async {
-    if (!Platform.isAndroid) return true;
+    if (!Platform.isAndroid && !Platform.isIOS) return true;
     if (shareMode == ShareMode.files) {
       final files = settings.sharedFiles;
       final ok = <SharedFile>[];
       for (final f in files) {
-        if (!f.uri.startsWith('content://') || await bridge.hasDocAccess(f.uri)) ok.add(f);
+        if (!isNativeUri(f.uri) || await bridge.hasDocAccess(f.uri)) ok.add(f);
       }
       if (ok.length != files.length) settings.sharedFiles = ok;
       if (ok.isEmpty) {
@@ -340,7 +341,7 @@ class SharingController extends ChangeNotifier {
       return true;
     }
     final uri = settings.folderUri!;
-    if (uri.startsWith('content://') && !await bridge.hasFolderAccess(uri)) {
+    if (isNativeUri(uri) && !await bridge.hasFolderAccess(uri)) {
       settings.folderUri = null;
       _fail('DataCast lost access to the folder. Please pick it again.');
       return false;
@@ -360,6 +361,7 @@ class SharingController extends ChangeNotifier {
     final uri = settings.folderUri!;
     final name = settings.folderName ?? 'Shared folder';
     if (uri.startsWith('content://')) return SafFileSource(bridge, uri, name);
+    if (uri.startsWith(iosBookmarkPrefix)) return BookmarkFileSource(bridge, uri, name);
     return IoFileSource(Directory(uri), displayName: name);
   }
 
@@ -373,10 +375,48 @@ class SharingController extends ChangeNotifier {
     _url = null;
     _auth.revokeAll();
     _applyKeepScreenOn();
-    if (Platform.isAndroid) {
+    if (Platform.isAndroid || Platform.isIOS) {
       try {
         await bridge.stopForegroundService();
       } catch (_) {}
+    }
+  }
+
+  Future<void> _onResume() async {
+    if (Platform.isIOS) await _reviveServerIfNeeded();
+    await refreshNetwork();
+  }
+
+  /// iOS may reclaim the listening socket while the app is in the background.
+  /// After coming back, check that it still accepts connections and, if not,
+  /// listen again with the same PIN and unlocked devices.
+  Future<void> _reviveServerIfNeeded() async {
+    final server = _server;
+    final port = server?.port;
+    if (server == null || port == null || _busy) return;
+    try {
+      final probe = await Socket.connect(InternetAddress.loopbackIPv4, port, timeout: const Duration(seconds: 1));
+      probe.destroy();
+      return;
+    } catch (_) {}
+    _setBusy(true);
+    try {
+      final ip = await findLocalIpv4();
+      await server.stop();
+      final newPort = await server.start(preferredPort: port, localIp: ip);
+      if (ip != null && 'http://$ip:$newPort' != _url) {
+        _url = 'http://$ip:$newPort';
+        _urlChanged = true;
+      }
+      try {
+        await _discovery.start(_identity, newPort);
+      } catch (_) {}
+    } catch (e) {
+      debugPrint('DataCast: could not resume sharing: $e');
+      await _teardown();
+      _stopReason = StopReason.system;
+    } finally {
+      _setBusy(false);
     }
   }
 
@@ -428,16 +468,16 @@ class SharingController extends ChangeNotifier {
   }
 
   Future<bool> _stillHasAccess() async {
-    if (!Platform.isAndroid) return true;
+    if (!Platform.isAndroid && !Platform.isIOS) return true;
     try {
       if (shareMode == ShareMode.folder) {
         final uri = settings.folderUri;
-        return uri == null || !uri.startsWith('content://') || await bridge.hasFolderAccess(uri);
+        return uri == null || !isNativeUri(uri) || await bridge.hasFolderAccess(uri);
       }
       final files = settings.sharedFiles;
       final ok = <SharedFile>[];
       for (final f in files) {
-        if (!f.uri.startsWith('content://') || await bridge.hasDocAccess(f.uri)) ok.add(f);
+        if (!isNativeUri(f.uri) || await bridge.hasDocAccess(f.uri)) ok.add(f);
       }
       if (ok.length != files.length) {
         settings.sharedFiles = ok;

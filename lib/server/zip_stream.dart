@@ -14,7 +14,7 @@ Stream<List<int>> zipFolder(FileSource src, String root) async* {
   Future<void> walk(String path, String prefix) async {
     final entries = await src.list(path);
     for (final e in entries) {
-      final name = '$prefix${e.name}';
+      final name = '$prefix${zipSafeName(e.name)}';
       if (e.isDir) {
         files.add((entry: e, name: '$name/'));
         await walk(e.path, '$name/');
@@ -162,6 +162,17 @@ Stream<List<int>> zipFolder(FileSource src, String root) async* {
     ..u32(needZip64 ? 0xFFFFFFFF : cdOffset)
     ..u16(0);
   yield end.take();
+}
+
+/// Makes one file name safe as a ZIP path segment. Names come from the
+/// shared folder's provider (SAF display names, iOS, desktop), which may
+/// contain `/`, `\`, `..` or control characters; left alone those would let
+/// the archive write outside the folder it is unzipped into ("zip slip").
+String zipSafeName(String name) {
+  var n = name.replaceAll(RegExp(r'[/\\\x00-\x1F\x7F]'), '_');
+  if (RegExp(r'^\.+$').hasMatch(n)) n = n.replaceAll('.', '_');
+  if (RegExp(r'^[A-Za-z]:').hasMatch(n)) n = n.replaceFirst(':', '_'); // C:foo on Windows
+  return n.isEmpty ? '_' : n;
 }
 
 (int, int) _dos(DateTime t) {

@@ -296,7 +296,8 @@ class _NoWifiView extends StatelessWidget {
             FilledButton.icon(
               onPressed: controller.openWifiSettings,
               icon: const Icon(Icons.wifi_rounded),
-              label: const Text('Open Wi-Fi settings'),
+              // iOS has no public link straight to the Wi-Fi page.
+              label: Text(defaultTargetPlatform == TargetPlatform.iOS ? 'Open Settings' : 'Open Wi-Fi settings'),
             ),
             const SizedBox(height: 10),
             const FilledButton(

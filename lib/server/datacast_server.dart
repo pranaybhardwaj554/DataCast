@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:mime/mime.dart';
 import 'package:shelf/shelf.dart';
@@ -20,6 +21,58 @@ typedef AssetLoader = Future<List<int>?> Function(String path);
 const _cookieName = 'dc_token';
 const apiVersion = 1;
 
+/// Largest body accepted by `POST /api/auth`.
+const maxAuthBody = 4096;
+
+/// CSP for the web UI and API responses.
+const pageCsp =
+    "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; "
+    "img-src 'self' data: blob:; media-src 'self' blob:; connect-src 'self'; frame-src 'self'; "
+    "object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'self'";
+
+/// CSP for shared files: a sandbox with no script, so a hostile HTML or SVG
+/// file renders inert in an opaque origin.
+const fileCsp =
+    "sandbox; default-src 'none'; img-src 'self' data:; media-src 'self'; "
+    "style-src 'unsafe-inline'; font-src 'self'; frame-ancestors 'self'";
+
+/// PDFs: browsers' built-in viewers break under `sandbox` or `default-src`,
+/// and PDF script runs in the viewer's own sandbox, not this origin. With
+/// `nosniff`, a file named `.pdf` is never rendered as HTML.
+const pdfCsp = "frame-ancestors 'self'";
+
+/// True for loopback, link-local and private (RFC 1918 / IPv6 ULA) addresses.
+/// Carrier-grade NAT (100.64.0.0/10) is deliberately excluded: other phones on
+/// the same mobile network live there.
+bool isLanAddress(InternetAddress a) {
+  if (a.isLoopback || a.isLinkLocal) return true;
+  final b = a.rawAddress;
+  if (a.type == InternetAddressType.IPv4) {
+    return b[0] == 10 || (b[0] == 172 && b[1] >= 16 && b[1] <= 31) || (b[0] == 192 && b[1] == 168);
+  }
+  if (a.type == InternetAddressType.IPv6) {
+    if ((b[0] & 0xFE) == 0xFC) return true; // fc00::/7 unique local
+    // IPv4-mapped (::ffff:a.b.c.d)
+    final mapped = b.sublist(0, 10).every((x) => x == 0) && b[10] == 0xFF && b[11] == 0xFF;
+    if (mapped) return isLanAddress(InternetAddress.fromRawAddress(Uint8List.fromList(b.sublist(12))));
+  }
+  return false;
+}
+
+/// Host headers we answer to: IP literals, `localhost`, single-label names
+/// and mDNS `.local` names. Anything else is a public DNS name, which is what
+/// a DNS rebinding attack needs a victim's browser to send.
+bool isAllowedHost(String? hostHeader) {
+  if (hostHeader == null || hostHeader.isEmpty) return false;
+  final uri = Uri.tryParse('http://$hostHeader');
+  if (uri == null || uri.host.isEmpty) return false;
+  var host = uri.host.toLowerCase();
+  if (host.endsWith('.')) host = host.substring(0, host.length - 1);
+  if (InternetAddress.tryParse(host) != null) return true;
+  if (host == 'localhost' || host.endsWith('.local')) return true;
+  return !host.contains('.');
+}
+
 /// The HTTP server each device runs.
 ///
 /// Serves the web UI from [assets] at `/` and the JSON API under `/api`.
@@ -35,6 +88,7 @@ class DataCastServer {
     String Function()? mode,
     this.thumbWait = const Duration(seconds: 3),
     this.thumbTimeout = const Duration(seconds: 8),
+    this.lanOnly = true,
   }) : allowZip = allowZip ?? (() => false),
        mode = mode ?? (() => 'folder');
 
@@ -62,6 +116,11 @@ class DataCastServer {
 
   /// `folder` or `files` (individually picked files in a flat root).
   final String Function() mode;
+
+  /// Refuse connections from addresses outside private / link-local ranges,
+  /// so a phone that is also on mobile data (carrier NAT, public IPv4) is not
+  /// reachable from there even though the server binds every interface.
+  final bool lanOnly;
 
   HttpServer? _server;
   String? _localIp;
@@ -100,6 +159,7 @@ class DataCastServer {
   late final Handler handler = const Pipeline()
       .addMiddleware(_errors)
       .addMiddleware(_securityHeaders)
+      .addMiddleware(_requestGate)
       .addHandler(_router.call);
 
   late final Router _router = Router(notFoundHandler: _static)
@@ -137,9 +197,42 @@ class DataCastServer {
             'x-content-type-options': 'nosniff',
             'referrer-policy': 'no-referrer',
             'x-frame-options': 'SAMEORIGIN',
+            if (!res.headers.containsKey('content-security-policy')) 'content-security-policy': pageCsp,
           },
         );
       };
+
+  /// Rejects requests that did not come from the local network, that name
+  /// this server by a hostname a web page could control (DNS rebinding), or
+  /// that are cross-origin writes (CSRF).
+  Middleware get _requestGate =>
+      (inner) => (request) {
+        if (lanOnly) {
+          final info = request.context['shelf.io.connection_info'];
+          if (info is HttpConnectionInfo && !isLanAddress(info.remoteAddress)) {
+            return _json({'error': 'Only devices on the local network can connect'}, 403);
+          }
+        }
+        if (!isAllowedHost(request.headers['host'])) {
+          return _json({'error': 'Unknown host name. Open this device by its IP address.'}, 403);
+        }
+        if (request.method != 'GET' && request.method != 'HEAD') {
+          final origin = request.headers['origin'];
+          if (origin != null && !_sameOrigin(origin, request.headers['host'])) {
+            return _json({'error': 'Cross-origin request refused'}, 403);
+          }
+        }
+        return inner(request);
+      };
+
+  static bool _sameOrigin(String origin, String? host) {
+    if (host == null) return false;
+    final o = Uri.tryParse(origin);
+    if (o == null || o.scheme != 'http' || o.host.isEmpty) return false;
+    final h = Uri.tryParse('http://$host');
+    if (h == null) return false;
+    return o.host.toLowerCase() == h.host.toLowerCase() && o.port == h.port;
+  }
 
   Handler _guard(FutureOr<Response> Function(Request) h) => (request) {
     if (!auth.validate(_token(request), _clientKey(request))) {
@@ -155,14 +248,17 @@ class DataCastServer {
 
   Response _info(Request r) {
     final id = identity();
+    final authed = auth.validate(_token(r), _clientKey(r));
     return _json({
       'name': id.name,
       'deviceId': id.deviceId,
       'platform': id.platform,
       'requiresPin': true,
-      'authenticated': auth.validate(_token(r), _clientKey(r)),
+      'authenticated': authed,
       'sharing': source() != null,
-      'folderName': source()?.displayName,
+      // The folder's name can say a lot about its contents; only show it to
+      // someone who knows the PIN.
+      'folderName': authed ? source()?.displayName : null,
       'allowZip': allowZip(),
       'thumbs': true,
       'mode': mode(),
@@ -182,8 +278,15 @@ class DataCastServer {
 
   Future<Response> _authenticate(Request r) async {
     String? pin;
+    final len = r.contentLength;
+    if (len != null && len > maxAuthBody) return _json({'error': 'Request too large'}, 413);
     try {
-      final body = await r.readAsString();
+      final bytes = <int>[];
+      await for (final chunk in r.read()) {
+        bytes.addAll(chunk);
+        if (bytes.length > maxAuthBody) return _json({'error': 'Request too large'}, 413);
+      }
+      final body = utf8.decode(bytes, allowMalformed: true);
       if (body.isNotEmpty) {
         final ct = r.headers['content-type'] ?? '';
         if (ct.contains('application/x-www-form-urlencoded')) {
@@ -250,6 +353,11 @@ class DataCastServer {
       'accept-ranges': 'bytes',
       'cache-control': 'private, no-cache',
       'content-disposition': _disposition(entry.name, attachment),
+      // Shared files are untrusted: an .html or .svg opened straight from
+      // /api/raw must not run script on this origin, where it could use the
+      // visitor's session to read every other file.
+      'content-security-policy': mime == 'application/pdf' ? pdfCsp : fileCsp,
+      'cross-origin-resource-policy': 'same-origin',
       if (entry.modified != null) 'last-modified': HttpDate.format(entry.modified!.toUtc()),
     };
 
@@ -287,7 +395,11 @@ class DataCastServer {
     }
     final etag =
         '"${Object.hash(path, entry.modified?.millisecondsSinceEpoch, entry.size, size).toUnsigned(32).toRadixString(16)}"';
-    final cacheHeaders = {'etag': etag, 'cache-control': 'private, max-age=86400'};
+    final cacheHeaders = {
+      'etag': etag,
+      'cache-control': 'private, max-age=86400',
+      'cross-origin-resource-policy': 'same-origin',
+    };
     if (r.headers['if-none-match'] == etag) return Response.notModified(headers: cacheHeaders);
 
     if (!await _thumbSlots.acquire(thumbWait)) {
@@ -324,6 +436,7 @@ class DataCastServer {
         'content-type': 'application/zip',
         'content-disposition': _disposition(name, true),
         'cache-control': 'no-store',
+        'cross-origin-resource-policy': 'same-origin',
       },
     );
   }
@@ -422,14 +535,18 @@ ByteRange? parseRange(String? header, int size) {
   final a = m.group(1)!, b = m.group(2)!;
   if (a.isEmpty && b.isEmpty) return null;
   int start, end;
+  // Numbers too long for an int would throw (a 500); treat a huge suffix or
+  // end as "to the end" and a huge start as out of range.
   if (a.isEmpty) {
-    final suffix = int.parse(b);
+    final suffix = int.tryParse(b);
     if (suffix == 0) return RangeResult.unsatisfiable;
-    start = size - suffix < 0 ? 0 : size - suffix;
+    start = suffix == null || size - suffix < 0 ? 0 : size - suffix;
     end = size - 1;
   } else {
-    start = int.parse(a);
-    end = b.isEmpty ? size - 1 : int.parse(b);
+    final s = int.tryParse(a);
+    if (s == null) return RangeResult.unsatisfiable;
+    start = s;
+    end = b.isEmpty ? size - 1 : (int.tryParse(b) ?? size - 1);
     if (end >= size) end = size - 1;
   }
   if (size == 0 || start >= size || start > end) return RangeResult.unsatisfiable;
