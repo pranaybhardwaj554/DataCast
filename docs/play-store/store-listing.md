@@ -39,7 +39,7 @@ Your phone and the other device need to be on the same Wi-Fi network. Some publi
 
 **Category:** Tools
 **Tags** (pick up to 5 in Console): File transfer, File manager, Productivity, Utilities
-**Contact email:** required, shown publicly. Use an address you're happy to publish.
+**Contact email:** bhardwajpranay506@gmail.com
 **Website:** optional; the privacy policy page's site works.
 
 ## Graphics
