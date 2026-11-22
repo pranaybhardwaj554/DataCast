@@ -479,7 +479,7 @@
   // So: load at most 3 at a time, only once on screen, and cancel the rest
   // when the file list goes away.
   var THUMB_MAX = 3;
-  var thumbQ = { queue: [], active: [] };
+  var thumbQ = { queue: [], active: [], paused: false };
   var thumbObserver = window.IntersectionObserver ? new IntersectionObserver(function (entries) {
     entries.forEach(function (en) {
       if (!en.isIntersecting) return;
@@ -500,6 +500,7 @@
     thumbQ.queue.unshift(img);
   }
   function pumpThumbs() {
+    if (thumbQ.paused) return;
     while (thumbQ.active.length < THUMB_MAX && thumbQ.queue.length) {
       var img = thumbQ.queue.shift();
       if (!img.isConnected || !img.dataset.src || img.dataset.cancelled) continue;
@@ -517,7 +518,26 @@
     };
     img.addEventListener('load', done);
     img.addEventListener('error', done);
+    delete img.dataset.paused;
     img.src = img.dataset.src;
+  }
+  // While the preview is open, thumbnails wait. Each one costs the phone a
+  // decode and holds one of the browser's few connections to it, so a video
+  // opened over a grid of thumbnails used to sit on a spinner behind them.
+  function pauseThumbs() {
+    if (thumbQ.paused) return;
+    thumbQ.paused = true;
+    var started = thumbQ.active.splice(0);
+    started.forEach(function (img) {
+      img.dataset.paused = '1';
+      img.removeAttribute('src'); // abort; it goes back to the front of the queue
+    });
+    thumbQ.queue = started.concat(thumbQ.queue);
+  }
+  function resumeThumbs() {
+    if (!thumbQ.paused) return;
+    thumbQ.paused = false;
+    pumpThumbs();
   }
   function cancelThumbs() {
     if (thumbObserver) thumbObserver.disconnect();
@@ -537,7 +557,7 @@
     var img = fadeInOnLoad(el('img', { alt: '', decoding: 'async' }));
     lazySrc(img, thumbUrl(p, size));
     img.addEventListener('error', function () {
-      if (img.dataset.cancelled) return;
+      if (img.dataset.cancelled || img.dataset.paused) return;
       if (!noRaw && img.dataset.triedRaw !== '1' && state.info && state.info.thumbs) {
         img.dataset.triedRaw = '1';
         requeueThumb(img, rawUrl(p)); // e.g. 415 for a format the phone can't shrink
@@ -554,7 +574,7 @@
     var box = el('span', { class: 'ficon img has-thumb' });
     var img = fadeInOnLoad(el('img', { alt: '', decoding: 'async' }));
     lazySrc(img, thumbUrl(p, 128));
-    img.addEventListener('error', function () { if (!img.dataset.cancelled && box.parentNode) box.parentNode.replaceChild(plain(), box); });
+    img.addEventListener('error', function () { if (!img.dataset.cancelled && !img.dataset.paused && box.parentNode) box.parentNode.replaceChild(plain(), box); });
     box.appendChild(img);
     return box;
   }
@@ -659,6 +679,7 @@
     lastFocus = document.activeElement;
     unhide($('preview'));
     document.body.style.overflow = 'hidden';
+    pauseThumbs();
     renderPreview(0);
     $('pv-close').focus();
   }
@@ -681,7 +702,7 @@
       img.addEventListener('error', function () { unsupported(box, e); });
       box.appendChild(img);
     } else if (k === 'vid') {
-      var v = el('video', { src: rawUrl(p), controls: true, autoplay: true, playsinline: true, preload: 'metadata' });
+      var v = el('video', { src: rawUrl(p), controls: true, autoplay: true, playsinline: true, preload: 'auto' });
       v.addEventListener('error', function () { unsupported(box, e); });
       box.appendChild(v);
     } else if (k === 'aud') {
@@ -715,6 +736,7 @@
       setTimeout(function () { if (pv.hidden) $('pv-content').textContent = ''; }, 220);
     }
     document.body.style.overflow = '';
+    resumeThumbs();
     if (!silent && lastFocus) lastFocus.focus();
   }
   function step(d) {
