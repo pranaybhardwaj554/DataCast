@@ -2,16 +2,18 @@ import 'dart:io';
 
 import '../models/file_entry.dart';
 import '../models/shared_file.dart';
+import 'descriptor_pool.dart';
 import 'file_source.dart';
 import 'platform_bridge.dart';
-import 'saf_file_source.dart';
+import 'stat_cache.dart';
 
 /// [FileSource] for individually picked files, shown as one flat folder.
 ///
 /// Duplicate names get a ` (2)`, ` (3)`... suffix so every file has a unique
 /// path.
 class SelectionFileSource extends FileSource {
-  SelectionFileSource(this._bridge, List<SharedFile> files, {required this.displayName}) {
+  SelectionFileSource(this._bridge, List<SharedFile> files, {required this.displayName})
+    : _pool = DescriptorPool(_bridge) {
     for (final f in files) {
       _byName[_uniqueName(f.name)] = f;
     }
@@ -21,6 +23,8 @@ class SelectionFileSource extends FileSource {
   @override
   final String displayName;
   final Map<String, SharedFile> _byName = {};
+  final DescriptorPool _pool;
+  final _stats = StatCache();
 
   String _uniqueName(String name) {
     if (!_byName.containsKey(name)) return name;
@@ -84,7 +88,7 @@ class SelectionFileSource extends FileSource {
   Future<FileEntry?> stat(String path) async {
     if (path == '/') return FileEntry(name: displayName, path: '/', isDir: true);
     final f = _fileFor(path);
-    return f == null ? null : _entry(path.substring(1), f);
+    return f == null ? null : _stats.get(path, () => _entry(path.substring(1), f));
   }
 
   SharedFile? _fileFor(String path) => path.lastIndexOf('/') == 0 ? _byName[path.substring(1)] : null;
@@ -97,22 +101,28 @@ class SelectionFileSource extends FileSource {
   }
 
   @override
-  Stream<List<int>> read(String path, {int start = 0, int? end}) {
+  Stream<List<int>> read(String path, {int start = 0, int? end}) async* {
     final f = _fileFor(path);
     if (f == null) throw FileNotFound(path);
     if (!_isContent(f.uri)) {
-      return Stream.fromFuture(_pathOf(f)).asyncExpand((p) {
-        if (p == null) throw FileNotFound(path);
-        return File(p).openRead(start, end == null ? null : end + 1);
-      });
+      final p = await _pathOf(f); // a plain path, or an iOS bookmark to resolve
+      if (p == null) throw FileNotFound(path);
+      yield* File(p).openRead(start, end == null ? null : end + 1);
+      return;
     }
-    return readDescriptor(
-      bridge: _bridge,
+    final e = await stat(path);
+    if (e == null) throw FileNotFound(path);
+    yield* _pool.read(
+      key: '$path|${e.size}|${e.modified?.millisecondsSinceEpoch}',
+      path: path,
+      size: e.size,
       open: () => _bridge.docOpenFd(f.uri),
       readChunk: (off, len) => _bridge.docReadChunk(f.uri, off, len),
-      path: path,
       start: start,
       end: end,
     );
   }
+
+  @override
+  Future<void> dispose() => _pool.dispose();
 }

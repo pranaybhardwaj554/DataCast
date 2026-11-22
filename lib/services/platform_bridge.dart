@@ -113,6 +113,12 @@ class PlatformBridge {
 
   Future<void> closeFd(int fd) => _channel.invokeMethod('closeFd', {'fd': fd});
 
+  /// Reads [length] bytes at [offset] from a descriptor from [openFd] or
+  /// [docOpenFd]. Throws [PlatformException] if it can't seek (a pipe).
+  Future<Uint8List> readFd(int fd, int offset, int length) async =>
+      await _channel.invokeMethod<Uint8List>('readFd', {'fd': fd, 'offset': offset, 'length': length}) ??
+      Uint8List(0);
+
   /// Slow fallback for providers whose files cannot be opened as a descriptor.
   Future<Uint8List> readChunk(String treeUri, String path, int offset, int length) async =>
       await _channel.invokeMethod<Uint8List>('readChunk', {

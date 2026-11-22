@@ -19,6 +19,7 @@ import android.os.PowerManager
  */
 class SharingService : Service() {
     private var wifiLock: WifiManager.WifiLock? = null
+    private var perfLock: WifiManager.WifiLock? = null
     private var wakeLock: PowerManager.WakeLock? = null
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -49,6 +50,7 @@ class SharingService : Service() {
 
     override fun onDestroy() {
         wifiLock?.takeIf { it.isHeld }?.release()
+        perfLock?.takeIf { it.isHeld }?.release()
         wakeLock?.takeIf { it.isHeld }?.release()
         super.onDestroy()
     }
@@ -63,6 +65,17 @@ class SharingService : Service() {
                 WifiManager.WIFI_MODE_FULL_HIGH_PERF
             }
             wifiLock = wifi.createWifiLock(mode, "DataCast:wifi").apply {
+                setReferenceCounted(false)
+                acquire()
+            }
+        }
+        // The low-latency lock only works while the app is on screen. Once the
+        // screen is off, Wi-Fi drops into power save and a video crawls, so
+        // also hold the high-performance lock, which keeps working then.
+        if (perfLock == null && Build.VERSION.SDK_INT >= 29) {
+            val wifi = applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
+            @Suppress("DEPRECATION")
+            perfLock = wifi.createWifiLock(WifiManager.WIFI_MODE_FULL_HIGH_PERF, "DataCast:wifi-perf").apply {
                 setReferenceCounted(false)
                 acquire()
             }

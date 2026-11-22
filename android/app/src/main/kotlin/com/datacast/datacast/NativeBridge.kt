@@ -97,6 +97,13 @@ class NativeBridge(private val context: Context, messenger: BinaryMessenger) :
             "stat" -> background(result) { storage.stat(uriArg(call), pathArg(call)) }
             "openFd" -> background(result) { storage.openFd(uriArg(call), pathArg(call)) }
             "closeFd" -> background(result) { storage.closeFd(call.argument<Int>("fd")!!); null }
+            "readFd" -> background(result) {
+                storage.readFd(
+                    call.argument<Int>("fd")!!,
+                    (call.argument<Number>("offset") ?: 0).toLong(),
+                    call.argument<Int>("length") ?: 0,
+                )
+            }
             "readChunk" -> background(result) {
                 storage.readChunk(
                     uriArg(call), pathArg(call),

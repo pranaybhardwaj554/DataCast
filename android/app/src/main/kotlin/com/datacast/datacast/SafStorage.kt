@@ -131,6 +131,25 @@ class SafStorage(private val context: Context) {
         ParcelFileDescriptor.adoptFd(fd).close()
     }
 
+    /**
+     * Positional read from a descriptor Dart is holding open. Used when Dart
+     * can't reopen it through /proc/self/fd, which scoped storage refuses for
+     * camera folders: the file is opened once per request instead of once per
+     * chunk. Throws (ESPIPE) for a pipe, and Dart then falls back to [readChunk].
+     */
+    fun readFd(fd: Int, offset: Long, length: Int): ByteArray {
+        ParcelFileDescriptor.fromFd(fd).use { pfd -> // a dup: closing it leaves Dart's fd open
+            val buf = ByteArray(length)
+            var got = 0
+            while (got < length) {
+                val n = android.system.Os.pread(pfd.fileDescriptor, buf, got, length - got, offset + got)
+                if (n <= 0) break
+                got += n
+            }
+            return if (got == length) buf else buf.copyOf(got)
+        }
+    }
+
     fun readChunk(tree: Uri, path: String, offset: Long, length: Int): ByteArray {
         val id = resolve(tree, path) ?: return ByteArray(0)
         val doc = DocumentsContract.buildDocumentUriUsingTree(tree, id)

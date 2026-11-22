@@ -39,6 +39,10 @@ abstract class FileSource {
   Future<void> dispose() async {}
 }
 
+/// Debug and profile builds log video timing and the read path (see
+/// `flutter logs`); release builds stay quiet.
+const logStreaming = !bool.fromEnvironment('dart.vm.product');
+
 String? guessMime(String name) => lookupMimeType(name);
 
 /// [FileSource] backed by a `dart:io` directory.

@@ -88,6 +88,7 @@ class DataCastServer {
     String Function()? mode,
     this.thumbWait = const Duration(seconds: 3),
     this.thumbTimeout = const Duration(seconds: 8),
+    this.mediaWait = const Duration(seconds: 30),
     this.lanOnly = true,
   }) : allowZip = allowZip ?? (() => false),
        mode = mode ?? (() => 'folder');
@@ -97,6 +98,9 @@ class DataCastServer {
   /// How long a thumbnail request may queue for a decoder slot before it gets
   /// a 503 (so a grid of thumbnails can't tie up the browser's connections).
   final Duration thumbWait;
+
+  /// Longest a thumbnail waits for video or audio streaming to finish.
+  final Duration mediaWait;
 
   /// How long one native thumbnail may take before it counts as unsupported.
   final Duration thumbTimeout;
@@ -339,6 +343,7 @@ class DataCastServer {
   }
 
   Future<Response> _sendFile(Request r, {required bool attachment}) async {
+    final sw = Stopwatch()..start();
     final path = normalizeSharePath(r.url.queryParameters['path']);
     if (path == '/') return _json({'error': 'Not a file'}, 400);
     final src = source()!;
@@ -351,7 +356,11 @@ class DataCastServer {
     final headers = <String, String>{
       'content-type': mime,
       'accept-ranges': 'bytes',
-      'cache-control': 'private, no-cache',
+      // Let the browser keep what it fetched: with no-cache its media cache
+      // re-requested ranges it already had while a video played. The ETag
+      // changes with the file, so an edited file is never served stale.
+      'cache-control': 'private, max-age=3600',
+      'etag': '"${Object.hash(path, entry.modified?.millisecondsSinceEpoch, size).toUnsigned(32).toRadixString(16)}"',
       'content-disposition': _disposition(entry.name, attachment),
       // Shared files are untrusted: an .html or .svg opened straight from
       // /api/raw must not run script on this origin, where it could use the
@@ -366,19 +375,30 @@ class DataCastServer {
       return Response(416, headers: {...headers, 'content-range': 'bytes */$size'});
     }
     final isHead = r.method == 'HEAD';
+    // Video and audio go first: while one is streaming, thumbnails wait.
+    final isMedia = mime.startsWith('video/') || mime.startsWith('audio/');
+    Stream<List<int>> body(Stream<List<int>> s) {
+      if (!isMedia) return s;
+      final tracked = _media.track(s);
+      return logStreaming ? _timed(tracked, path, r.headers['range'], statMs: sw.elapsedMilliseconds) : tracked;
+    }
     if (range != null) {
       final len = range.end - range.start + 1;
       return Response(
         206,
-        body: isHead ? null : src.read(path, start: range.start, end: range.end),
+        body: isHead ? null : body(src.read(path, start: range.start, end: range.end)),
         headers: {...headers, 'content-length': '$len', 'content-range': 'bytes ${range.start}-${range.end}/$size'},
       );
     }
-    return Response.ok(isHead || size == 0 ? null : src.read(path), headers: {...headers, 'content-length': '$size'});
+    return Response.ok(
+      isHead || size == 0 ? null : body(src.read(path)),
+      headers: {...headers, 'content-length': '$size'},
+    );
   }
 
   static const thumbSizes = [128, 256, 512];
   final _thumbSlots = _Semaphore(3);
+  final _media = MediaPriority();
 
   Future<Response> _thumb(Request r) async {
     final path = normalizeSharePath(r.url.queryParameters['path']);
@@ -402,6 +422,10 @@ class DataCastServer {
     };
     if (r.headers['if-none-match'] == etag) return Response.notModified(headers: cacheHeaders);
 
+    // A video someone is watching matters more than a grid tile: hold the
+    // thumbnail until no video or audio has streamed for a moment, so its
+    // decode doesn't compete with the video for the phone's CPU and storage.
+    await _media.idle(mediaWait);
     if (!await _thumbSlots.acquire(thumbWait)) {
       return _json({'error': 'Busy making thumbnails'}, 503, {'retry-after': '2'});
     }
@@ -551,6 +575,114 @@ ByteRange? parseRange(String? header, int size) {
   }
   if (size == 0 || start >= size || start > end) return RangeResult.unsatisfiable;
   return ByteRange(start, end);
+}
+
+/// Logs one line per video/audio response when [logStreaming] is on, so slow
+/// playback can be measured on a real phone with `flutter logs`.
+Stream<List<int>> _timed(Stream<List<int>> source, String path, String? range, {required int statMs}) {
+  final sw = Stopwatch()..start();
+  int? firstMs;
+  var bytes = 0;
+  var reported = false;
+  void report(String how) {
+    if (reported) return;
+    reported = true;
+    final ms = sw.elapsedMilliseconds;
+    final mbps = ms == 0 ? 0 : bytes * 8 / ms / 1000;
+    // ignore: avoid_print
+    print('[DataCast] $how $path range=${range ?? 'none'} stat=${statMs}ms '
+        'firstByte=${firstMs ?? '-'}ms ${(bytes / 1048576).toStringAsFixed(1)}MB in ${ms}ms '
+        '(${mbps.toStringAsFixed(1)} Mbit/s)');
+  }
+
+  late StreamSubscription<List<int>> sub;
+  final out = StreamController<List<int>>(sync: true);
+  out.onListen = () {
+    sub = source.listen(
+      (chunk) {
+        firstMs ??= sw.elapsedMilliseconds;
+        bytes += chunk.length;
+        out.add(chunk);
+      },
+      onError: out.addError,
+      onDone: () {
+        report('done');
+        out.close();
+      },
+    );
+  };
+  out.onPause = () => sub.pause();
+  out.onResume = () => sub.resume();
+  out.onCancel = () {
+    report('cancelled');
+    return sub.cancel();
+  };
+  return out.stream;
+}
+
+/// Tracks video and audio responses in flight so other work (thumbnails) can
+/// wait for them. Browsers fetch a video as a series of range requests with
+/// short gaps between them, so "idle" means nothing has streamed for [grace].
+class MediaPriority {
+  MediaPriority({this.grace = const Duration(milliseconds: 1500)});
+  final Duration grace;
+  int _active = 0;
+  DateTime _lastEnd = DateTime.fromMillisecondsSinceEpoch(0);
+  Completer<void>? _changed;
+
+  bool get busy => _active > 0 || DateTime.now().difference(_lastEnd) < grace;
+
+  void _notify() {
+    final c = _changed;
+    _changed = null;
+    c?.complete();
+  }
+
+  /// Wraps a response body so its lifetime (until done or the client goes
+  /// away) counts as media streaming.
+  Stream<List<int>> track(Stream<List<int>> source) {
+    late StreamSubscription<List<int>> sub;
+    var ended = false;
+    void end() {
+      if (ended) return;
+      ended = true;
+      _active--;
+      _lastEnd = DateTime.now();
+      _notify();
+    }
+
+    final out = StreamController<List<int>>(sync: true);
+    out.onListen = () {
+      _active++;
+      sub = source.listen(
+        out.add,
+        onError: out.addError,
+        onDone: () {
+          end();
+          out.close();
+        },
+      );
+    };
+    out.onPause = () => sub.pause();
+    out.onResume = () => sub.resume();
+    out.onCancel = () {
+      end();
+      return sub.cancel();
+    };
+    return out.stream;
+  }
+
+  /// Completes once no media has streamed for [grace], or after [max].
+  Future<void> idle(Duration max) async {
+    final deadline = DateTime.now().add(max);
+    while (busy) {
+      final left = deadline.difference(DateTime.now());
+      if (left <= Duration.zero) return;
+      final wait = _active > 0 ? left : grace - DateTime.now().difference(_lastEnd);
+      final c = _changed ??= Completer<void>();
+      await Future.any([c.future, Future<void>.delayed(wait < left ? wait : left)]);
+    }
+  }
 }
 
 /// Limits how many thumbnails are generated at once.
