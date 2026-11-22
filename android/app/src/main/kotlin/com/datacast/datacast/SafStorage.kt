@@ -74,8 +74,7 @@ class SafStorage(private val context: Context) {
 
     fun docOpenFd(doc: Uri): Int? = resolver.openFileDescriptor(doc, "r")?.detachFd()
 
-    fun docReadChunk(doc: Uri, offset: Long, length: Int): ByteArray =
-        resolver.openInputStream(doc)?.use { readRange(it, offset, length) } ?: ByteArray(0)
+    fun docReadChunk(doc: Uri, offset: Long, length: Int): ByteArray = readAt(doc, offset, length)
 
     // --------------------------------------------------------- picked folders
 
@@ -135,6 +134,30 @@ class SafStorage(private val context: Context) {
     fun readChunk(tree: Uri, path: String, offset: Long, length: Int): ByteArray {
         val id = resolve(tree, path) ?: return ByteArray(0)
         val doc = DocumentsContract.buildDocumentUriUsingTree(tree, id)
+        return readAt(doc, offset, length)
+    }
+
+    /**
+     * Reads [length] bytes at [offset]. Seeks the file descriptor directly so
+     * a chunk deep into a large video costs the same as the first one; the
+     * stream fallback has to skip (often read) everything before [offset].
+     */
+    private fun readAt(doc: Uri, offset: Long, length: Int): ByteArray {
+        try {
+            resolver.openFileDescriptor(doc, "r")?.use { pfd ->
+                java.io.FileInputStream(pfd.fileDescriptor).use { input ->
+                    val ch = input.channel
+                    ch.position(offset)
+                    val buf = java.nio.ByteBuffer.allocate(length)
+                    while (buf.hasRemaining()) {
+                        if (ch.read(buf) < 0) break
+                    }
+                    return if (buf.position() == length) buf.array() else buf.array().copyOf(buf.position())
+                }
+            }
+        } catch (_: Exception) {
+            // Not seekable (e.g. a pipe from a cloud provider): stream instead.
+        }
         return resolver.openInputStream(doc)?.use { readRange(it, offset, length) } ?: ByteArray(0)
     }
 

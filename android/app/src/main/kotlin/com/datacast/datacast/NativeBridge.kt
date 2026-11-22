@@ -22,7 +22,12 @@ class NativeBridge(private val context: Context, messenger: BinaryMessenger) :
 
     private val channel = MethodChannel(messenger, "datacast/native")
     private val storage = SafStorage(context)
+    // File reads, stats and listings get their own threads. Thumbnails used to
+    // share them, so a grid of video thumbnails (each decode can take seconds,
+    // and keeps running after Dart gives up on it) left every thread busy and
+    // a video's range requests waited behind them before a single byte went out.
     private val io = Executors.newFixedThreadPool(4)
+    private val thumbIo = Executors.newFixedThreadPool(2)
     private val main = Handler(Looper.getMainLooper())
     private var pendingPick: MethodChannel.Result? = null
     private var pendingFiles: MethodChannel.Result? = null
@@ -49,10 +54,10 @@ class NativeBridge(private val context: Context, messenger: BinaryMessenger) :
         when (call.method) {
             "pickFolder" -> pickFolder(result)
             "pickFiles" -> pickFiles(result)
-            "thumbnail" -> background(result) {
+            "thumbnail" -> background(result, thumbIo) {
                 storage.thumbnail(uriArg(call), pathArg(call), call.argument<Int>("size") ?: 256)
             }
-            "docThumbnail" -> background(result) {
+            "docThumbnail" -> background(result, thumbIo) {
                 storage.docThumbnail(uriArg(call), call.argument<Int>("size") ?: 256)
             }
             "hasDocAccess" -> background(result) { storage.hasDocAccess(uriArg(call)) }
@@ -199,8 +204,12 @@ class NativeBridge(private val context: Context, messenger: BinaryMessenger) :
     private fun uriArg(call: MethodCall): Uri = Uri.parse(call.argument<String>("uri")!!)
     private fun pathArg(call: MethodCall): String = call.argument<String>("path") ?: "/"
 
-    private fun background(result: MethodChannel.Result, block: () -> Any?) {
-        io.execute {
+    private fun background(
+        result: MethodChannel.Result,
+        pool: java.util.concurrent.ExecutorService = io,
+        block: () -> Any?,
+    ) {
+        pool.execute {
             try {
                 val value = block()
                 main.post { result.success(value) }
