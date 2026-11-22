@@ -145,6 +145,17 @@ button, input { font: inherit; color: inherit; }
 .toolbar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .search { display: flex; align-items: center; gap: 8px; height: 40px; padding: 0 12px; border-radius: 10px; border: 1px solid var(--line-strong); background: var(--surface); color: var(--ink-3); flex: 1 1 200px; max-width: 320px; }
 .search input { border: none; outline: none; background: transparent; flex: 1; min-width: 0; color: var(--ink); font-size: 14px; }
+.sort { position: relative; display: flex; align-items: center; height: 40px; border-radius: 10px; border: 1px solid var(--line-strong); background: var(--surface); color: var(--ink-3); }
+.sort svg { position: absolute; left: 12px; pointer-events: none; }
+.sort select { appearance: none; -webkit-appearance: none; height: 100%; border: none; outline: none; background: transparent; color: var(--ink); font: inherit; font-size: 14px; padding: 0 30px 0 36px; border-radius: 10px; cursor: pointer;
+  background-image: linear-gradient(45deg, transparent 50%, currentColor 50%), linear-gradient(135deg, currentColor 50%, transparent 50%);
+  background-position: right 15px center, right 11px center; background-size: 4px 4px; background-repeat: no-repeat; }
+.sort:focus-within { border-color: var(--accent); }
+.sort select option { color: var(--ink); background: var(--surface); }
+.th-sort { font: inherit; letter-spacing: inherit; text-transform: inherit; color: inherit; background: none; border: none; padding: 0; cursor: pointer; display: inline-flex; align-items: center; gap: 4px; }
+.th-sort:hover, .files th.sorted .th-sort { color: var(--ink); }
+.files th.sorted .th-sort::after { content: "↑"; font-size: 12px; }
+.files th.sorted.desc .th-sort::after { content: "↓"; }
 .seg { display: flex; border: 1px solid var(--line-strong); border-radius: 10px; overflow: hidden; background: var(--surface); }
 .seg button { width: 40px; height: 38px; border: none; background: transparent; color: var(--ink-3); display: grid; place-items: center; cursor: pointer; }
 .seg button[aria-pressed="true"] { background: var(--accent-soft); color: var(--accent); }
@@ -219,7 +230,10 @@ table.files { width: 100%; min-width: 520px; border-collapse: collapse; font-siz
   .files thead { display: none; }
   .files td { padding: 6px 12px; }
   .toolbar .h2 { flex: 1 1 auto; min-width: 0; font-size: 1.4rem; }
-  .search { max-width: none; order: 10; flex: 1 1 100%; }
+  .search { max-width: none; order: 10; flex: 1 1 140px; min-width: 0; }
+  .sort { order: 11; flex: 0 1 auto; min-width: 0; }
+  .toolbar::before { content: ""; order: 9; flex-basis: 100%; height: 0; margin-top: -10px; } /* search + sort start a new row */
+  .sort select { min-width: 0; width: 100%; }
   #zip-btn { width: 40px; padding: 0; }
   #zip-btn .zip-label { display: none; }
   .file-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }

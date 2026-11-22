@@ -14,12 +14,15 @@
 
   var TOKEN_KEY = 'dc_token';
   var VIEW_KEY = 'dc_view';
+  var SORT_KEY = 'dc_sort';
+  var SORTS = ['name-asc', 'name-desc', 'date-desc', 'date-asc', 'size-desc', 'size-asc'];
   var state = {
     info: null,
     path: '/',
     entries: [],
     query: '',
     layout: safeGet(VIEW_KEY) || 'list',
+    sort: SORTS.indexOf(safeGet(SORT_KEY)) >= 0 ? safeGet(SORT_KEY) : 'name-asc',
     previewList: [],
     previewIndex: -1,
     devicesTimer: null,
@@ -455,10 +458,52 @@
   function encodePath(p) { return p.split('/').map(encodeURIComponent).join('/'); }
   function visibleEntries() {
     var qy = state.query.trim().toLowerCase();
-    var list = state.entries.slice().sort(function (a, b) {
-      return (b.isDir ? 1 : 0) - (a.isDir ? 1 : 0) || a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' });
-    });
+    var list = state.entries.slice().sort(compareEntries(state.sort));
     return qy ? list.filter(function (e) { return e.name.toLowerCase().indexOf(qy) >= 0; }) : list;
+  }
+  // Folders always come first. Within each group: the chosen key, then name
+  // A-Z to break ties. Items with no date or size go last either way.
+  function timeOf(e) {
+    var v = e.modified;
+    if (!v) return null;
+    var t = new Date(typeof v === 'number' && v < 1e12 ? v * 1000 : v).getTime();
+    return isNaN(t) ? null : t;
+  }
+  function byName(a, b) { return a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' }); }
+  function compareEntries(sort) {
+    var key = sort.split('-')[0], dir = sort.split('-')[1] === 'desc' ? -1 : 1;
+    var val = key === 'date' ? timeOf : key === 'size' ? function (e) { return e.isDir ? null : e.size; } : null;
+    return function (a, b) {
+      var d = (b.isDir ? 1 : 0) - (a.isDir ? 1 : 0);
+      if (d) return d;
+      if (!val) return dir * byName(a, b);
+      var x = val(a), y = val(b);
+      if (x == null || y == null) return (x == null) - (y == null) || byName(a, b);
+      return dir * (x - y) || byName(a, b);
+    };
+  }
+  function setSort(sort) {
+    if (SORTS.indexOf(sort) < 0 || sort === state.sort) return;
+    state.sort = sort;
+    safeSet(SORT_KEY, sort);
+    renderFiles(true);
+  }
+  // Column headers: click to sort by that column, click again to flip it.
+  // Names start A-Z; dates and sizes start newest / largest.
+  function headerSort(key) {
+    var cur = state.sort.split('-');
+    if (cur[0] === key) return key + '-' + (cur[1] === 'asc' ? 'desc' : 'asc');
+    return key + (key === 'name' ? '-asc' : '-desc');
+  }
+  function renderSortUi() {
+    $('sort').value = state.sort;
+    var cur = state.sort.split('-');
+    document.querySelectorAll('#list-box th[data-sort]').forEach(function (th) {
+      var on = th.getAttribute('data-sort') === cur[0];
+      th.setAttribute('aria-sort', on ? (cur[1] === 'asc' ? 'ascending' : 'descending') : 'none');
+      th.classList.toggle('sorted', on);
+      th.classList.toggle('desc', on && cur[1] === 'desc');
+    });
   }
   function activate(e, list) {
     if (e.isDir) { location.hash = '#/files' + encodePath(entryPath(e)); return; }
@@ -630,6 +675,7 @@
     grid.hidden = !isGrid || !list.length;
     $('empty').hidden = !!list.length;
     $('empty').textContent = state.query ? 'Nothing here matches “' + state.query + '”.' : 'This folder is empty.';
+    renderSortUi();
     $('view-list').setAttribute('aria-pressed', String(!isGrid));
     $('view-grid').setAttribute('aria-pressed', String(isGrid));
     var dirs = state.entries.filter(function (e) { return e.isDir; }).length;
@@ -661,6 +707,10 @@
     }).catch(offline);
   }
   $('search').addEventListener('input', function (ev) { state.query = ev.target.value; renderFiles(); });
+  $('sort').addEventListener('change', function (ev) { setSort(ev.target.value); });
+  document.querySelectorAll('#list-box th[data-sort] .th-sort').forEach(function (btn) {
+    btn.addEventListener('click', function () { setSort(headerSort(btn.parentNode.getAttribute('data-sort'))); });
+  });
   $('view-list').addEventListener('click', function () { if (state.layout === 'list') return; state.layout = 'list'; safeSet(VIEW_KEY, 'list'); renderFiles(true); });
   $('view-grid').addEventListener('click', function () { if (state.layout === 'grid') return; state.layout = 'grid'; safeSet(VIEW_KEY, 'grid'); renderFiles(true); });
 

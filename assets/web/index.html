@@ -89,6 +89,18 @@
       <span class="sr-only">Search this folder</span>
       <input type="search" id="search" placeholder="Search this folder" autocomplete="off">
     </label>
+    <label class="sort">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 6h11M3 12h7M3 18h4"/><path d="M18 5v14"/><path d="m15 16 3 3 3-3"/></svg>
+      <span class="sr-only">Sort by</span>
+      <select id="sort">
+        <option value="name-asc">Name A–Z</option>
+        <option value="name-desc">Name Z–A</option>
+        <option value="date-desc">Newest first</option>
+        <option value="date-asc">Oldest first</option>
+        <option value="size-desc">Largest first</option>
+        <option value="size-asc">Smallest first</option>
+      </select>
+    </label>
     <div class="seg" role="group" aria-label="View">
       <button type="button" id="view-list" aria-label="List view" aria-pressed="true">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/></svg>
@@ -106,9 +118,9 @@
     <table class="files">
       <thead>
         <tr>
-          <th scope="col">Name</th>
-          <th scope="col" class="col-size">Size</th>
-          <th scope="col" class="col-date">Modified</th>
+          <th scope="col" data-sort="name"><button type="button" class="th-sort">Name</button></th>
+          <th scope="col" class="col-size" data-sort="size"><button type="button" class="th-sort">Size</button></th>
+          <th scope="col" class="col-date" data-sort="date"><button type="button" class="th-sort">Modified</button></th>
           <th scope="col" class="col-act"><span class="sr-only">Actions</span></th>
         </tr>
       </thead>
